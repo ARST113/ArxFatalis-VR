@@ -1,0 +1,71 @@
+// The runner inserts the production transform statements verbatim. Only the
+// graphics sink is replaced: these tests execute the real GLM pose math.
+#include <cmath>
+#include <cstdio>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+constexpr int HAND_LEFT = 0, HAND_RIGHT = 1;
+struct HandBase {
+    glm::mat4 model{1.f};
+    void setModel(const glm::mat4& value) { model = value; }
+};
+struct Hand {
+    glm::mat4 mModel[2];
+    HandBase left, right;
+    HandBase* mLeftHand = &left;
+    HandBase* mRightHand = &right;
+    void setModel(int leftright, const glm::mat4& m);
+};
+@SET_MODEL@
+struct PoseState { float position[3]; float orientation[4]; };
+glm::mat4 gameModel(int hand, const PoseState& poseState) {
+    Hand hands;
+    Hand* mHands = &hands;
+    @GAME_MODEL@
+    return hands.mModel[hand];
+}
+int main() {
+    // Wrist -> distal middle-finger joints read from the loaded FBX bind poses,
+    // not inferred from the correction under test.
+    const glm::vec3 finger[2] = {
+        {16.8597f, -0.6048f, 1.0123f}, {-16.8593f, 0.6048f, -1.0122f}
+    };
+    // Arx uses +Z forward and -Y up. Literal controller orientations include
+    // neutral, a quarter yaw, a quarter pitch, and a wrist roll.
+    const float h = 0.70710678f;
+    const PoseState poses[] = {
+        {{12.f, -34.f, 56.f}, {0.f, 0.f, 0.f, 1.f}},
+        {{12.f, -34.f, 56.f}, {0.f, h, 0.f, h}},
+        {{12.f, -34.f, 56.f}, {h, 0.f, 0.f, h}},
+        {{12.f, -34.f, 56.f}, {0.f, 0.f, h, h}}
+    };
+    const glm::vec3 wantForward[] = {{0,0,1}, {1,0,0}, {0,-1,0}, {0,0,1}};
+    const glm::vec3 wantUp[] = {{0,-1,0}, {0,-1,0}, {0,0,-1}, {1,0,0}};
+    int failed = 0;
+    for (int hand = 0; hand < 2; ++hand) {
+        Hand native;
+        native.setModel(hand, glm::mat4(1.f));
+        const glm::vec3 nativeForward = glm::normalize(glm::mat3(native.mModel[hand]) * finger[hand]);
+        if (glm::dot(nativeForward, glm::vec3(0,0,-1)) < .99f) {
+            std::printf("FAIL native hand %d does not point along OpenXR -Z\n", hand);
+            ++failed;
+        }
+        for (int i = 0; i < 4; ++i) {
+            const glm::mat4 result = gameModel(hand, poses[i]);
+            const glm::vec3 forward = glm::normalize(glm::mat3(result) * finger[hand]);
+            const float agreement = glm::dot(forward, wantForward[i]);
+            // Undo just the independently checked asset correction to inspect
+            // the controller's up axis, independent of model handedness.
+            const glm::mat3 controller = glm::mat3(result) * glm::inverse(glm::mat3(native.mModel[hand]));
+            const glm::vec3 up = glm::normalize(controller * glm::vec3(0,1,0));
+            const bool ok = agreement > .99f && glm::dot(up, wantUp[i]) > .999f
+                && glm::length(glm::vec3(result[3]) - glm::vec3(12,-34,56)) < .001f;
+            std::printf("%s hand=%d pose=%d fingerAimDot=%.6f upDot=%.6f\n",
+                ok ? "PASS" : "FAIL", hand, i, agreement, glm::dot(up, wantUp[i]));
+            if (!ok) ++failed;
+        }
+    }
+    return failed ? 1 : 0;
+}

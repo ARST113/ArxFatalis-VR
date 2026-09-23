@@ -1,0 +1,56 @@
+//plugins {
+//    id 'com.android.application'
+//}
+apply plugin: 'com.android.application'
+apply from: "$projectDir/build_sdk.gradle"
+
+// Keep Codex rebuilds separate from the vendor sample's stale hard-linked NDK
+// outputs. Gradle otherwise tries to delete an SDK-backed libc++ hard link on
+// Windows before every native build and fails before invoking ndk-build.
+layout.buildDirectory.set(file("$projectDir/build-codex"))
+
+android {
+    namespace 'com.picovr.openxr'
+    ndkVersion '27.0.12077973'
+
+    compileSdkVersion 35
+    lint {
+        abortOnError false
+    }
+
+    defaultConfig {
+        applicationId "com.picovr.openxr_demos"
+        minSdkVersion 29
+        targetSdkVersion 34
+        versionCode 1
+        versionName "1.0"
+
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            buildConfigField "boolean", "ENABLE_DEBUG", "true"
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    sourceSets {
+        main {
+            res.srcDirs += "src/main/asset";
+        }
+    }
+
+}
+
+dependencies {
+}

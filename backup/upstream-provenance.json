@@ -1,0 +1,56 @@
+[
+  {
+    "directory": "ArxAndroid",
+    "origin": "https://github.com/sandstranger/ArxLibertatis.git",
+    "head": "e5cb1a74f4bef54ccc8ceb88fef45d284e9745b0",
+    "branch": "arx-vr-android"
+  },
+  {
+    "directory": "ArxWindows",
+    "origin": "https://github.com/arx/ArxWindows.git",
+    "head": "95f6ff94263bb156d2b9a1e5f6f2e324313932fc",
+    "branch": "arx-vr"
+  },
+  {
+    "directory": "ArxWindows/arx",
+    "origin": "https://github.com/arx/ArxLibertatis.git",
+    "head": "5b95e4c5ca9d583f1b11c085326979772645e0f3",
+    "branch": "arx-vr"
+  },
+  {
+    "directory": "PICO-OpenXR-Demos",
+    "origin": "https://github.com/picoxr/OpenXR_Demos.git",
+    "head": "292f3116d8a7d9646f8fbdf1848020e0542eadf4",
+    "branch": "arx-vr-pico-bootstrap"
+  },
+  {
+    "directory": "android-deps",
+    "origin": "https://github.com/sandstranger/com.mobilerpgpack.phone.git",
+    "head": "983964fefe89ab0402f74415512536aa89cea680",
+    "branch": "main"
+  },
+  {
+    "directory": "android-base",
+    "origin": "https://github.com/sandstranger/com.mobilerpgpack.phone.git",
+    "head": "983964fefe89ab0402f74415512536aa89cea680",
+    "branch": "main"
+  },
+  {
+    "directory": "SDL2",
+    "origin": "https://github.com/libsdl-org/SDL.git",
+    "head": "5d249570393f7a37e037abf22cd6012a4cc56a71",
+    "branch": null
+  },
+  {
+    "directory": "third_party/cameraunlock-core",
+    "origin": "https://github.com/itsloopyo/cameraunlock-core.git",
+    "head": "c5e76c94037a11b6dab40f8a2e286ca824819be3",
+    "branch": "main"
+  },
+  {
+    "directory": "thirdparty/OpenXR-SDK",
+    "origin": "https://github.com/KhronosGroup/OpenXR-SDK.git",
+    "head": "57af7fc61f9f2d492580cb28aab6d0ea59d8d417",
+    "branch": "main"
+  }
+]

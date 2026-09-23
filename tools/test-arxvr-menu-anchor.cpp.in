@@ -1,0 +1,92 @@
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <vector>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+struct XrVector3f { float x,y,z; };
+struct XrQuaternionf { float x,y,z,w; };
+struct XrPosef { XrQuaternionf orientation; XrVector3f position; };
+struct XrView { XrPosef pose; };
+#define infof(...) ((void)0)
+int recenterCount = 0;
+void recenter() { ++recenterCount; }
+struct Application {
+    bool mArxMenuAnchorValid = false;
+    bool mArxStereoForFrame = false;
+    bool mArxHeadFocused = false;
+    XrPosef mArxHeadPose{{0,0,0,1},{0,0,0}};
+    glm::vec3 mArxMenuCenter{0};
+    glm::mat4 mArxMenuModel{1};
+    std::vector<XrView> m_views;
+    float mIpd = .064f;
+    int mArxWidth = 1440, mArxHeight = 1440;
+    void (*mArxEngineRecenter2d)() = recenter;
+    void setTrackingFrameHead(const XrPosef& pose, bool focused);
+    void onSessionFocusLost();
+    void renderAnchor(const XrPosef& pose) {
+        int eye = 0;
+        @ANCHOR@
+    }
+};
+@HEAD_CALLBACK@
+@FOCUS_CALLBACK@
+int main() {
+    int failed = 0;
+    auto check = [&](bool ok, const char* text) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAIL", text);
+        if (!ok) ++failed;
+    };
+    Application app;
+    // The eye-tracking views can be stale or unavailable. Menu placement must
+    // use the current centre-head pose from the same sample as engine input.
+    const XrPosef stale{{0,0,0,1},{8,7,6}};
+    app.m_views = {{stale}, {stale}};
+    const XrPosef head{{0,0,0,1},{1,1.6f,2}};
+    const XrPosef leftEye{{0,0,0,1},{.968f,1.6f,2}};
+    app.setTrackingFrameHead(head, true);
+    app.renderAnchor(leftEye);
+    check(glm::distance(app.mArxMenuCenter, glm::vec3(1,1.6f,.2f)) < .001f,
+          "menu uses fresh centre-head, not stale eye-tracking views");
+    const glm::vec3 openedCenter = app.mArxMenuCenter;
+    const float h = .70710678f;
+    const XrPosef turned{{0,h,0,h},{2,1.7f,3}};
+    app.setTrackingFrameHead(turned, true);
+    app.renderAnchor(turned);
+    check(glm::distance(app.mArxMenuCenter, openedCenter) < .001f,
+          "open menu stays world-fixed while the head turns/moves");
+    app.setTrackingFrameHead(turned, false);
+    const int beforeFocus = recenterCount;
+    app.setTrackingFrameHead(turned, true);
+    app.renderAnchor(turned);
+    check(glm::distance(app.mArxMenuCenter, glm::vec3(.2f,1.7f,3)) < .001f,
+          "focus return places menu in front of current yaw");
+    check(recenterCount == beforeFocus + 1,
+          "focus return resets the pointer reference with the panel");
+    const int beforeGameplay = recenterCount;
+    app.mArxStereoForFrame = true;
+    app.setTrackingFrameHead(turned, false);
+    app.setTrackingFrameHead(head, true);
+    check(recenterCount == beforeGameplay,
+          "gameplay focus return does not reset body/head orientation");
+    // Explicit reopening/recenter is upright even with pitch and roll.
+    app.mArxStereoForFrame = false;
+    app.mArxMenuAnchorValid = false;
+    const auto q = glm::angleAxis(glm::radians(20.f), glm::vec3(1,0,0))
+                 * glm::angleAxis(glm::radians(30.f), glm::vec3(0,0,1));
+    const XrPosef tilted{{q.x,q.y,q.z,q.w},{1,1.6f,2}};
+    app.setTrackingFrameHead(tilted, true);
+    app.renderAnchor(tilted);
+    check(glm::distance(glm::normalize(glm::vec3(app.mArxMenuModel[1])), glm::vec3(0,1,0)) < .001f
+          && std::abs(app.mArxMenuCenter.y - 1.6f) < .001f,
+          "panel remains upright and at current eye height");
+    const int beforeSuspendedFocus = recenterCount;
+    app.onSessionFocusLost(); // No RenderLayer call while the runtime sleeps.
+    app.setTrackingFrameHead(turned, true);
+    app.renderAnchor(turned);
+    check(recenterCount == beforeSuspendedFocus + 1
+          && glm::distance(app.mArxMenuCenter, glm::vec3(.2f,1.7f,3)) < .001f,
+          "focus recovery works even when no unfocused frame was rendered");
+    return failed ? 1 : 0;
+}

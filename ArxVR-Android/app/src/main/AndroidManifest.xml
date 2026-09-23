@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" />
+
+    <application
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:hardwareAccelerated="true"
+        android:label="Arx Fatalis VR Dev"
+        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        <activity
+            android:name=".ArxActivity"
+            android:alwaysRetainTaskState="true"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape" />
+        <activity
+            android:name="com.picovr.openxr.MainActivity"
+            android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape">
+            <meta-data android:name="android.app.lib_name" android:value="openxr_demos" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <meta-data android:name="pvr.app.type" android:value="vr" />
+    </application>
+</manifest>

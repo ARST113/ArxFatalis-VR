@@ -1,0 +1,27 @@
+[
+  {
+    "category": "device-game-files",
+    "files": 1620,
+    "bytes": 1255259591.0
+  },
+  {
+    "category": "earlier-session",
+    "files": 300,
+    "bytes": 1412560341.0
+  },
+  {
+    "category": "original-game",
+    "files": 71,
+    "bytes": 777298816.0
+  },
+  {
+    "category": "user-reference-images",
+    "files": 11,
+    "bytes": 1809965.0
+  },
+  {
+    "category": "workspace",
+    "files": 52566,
+    "bytes": 13292572395.0
+  }
+]

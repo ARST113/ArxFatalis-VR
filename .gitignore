@@ -1,0 +1,18 @@
+# Large/private development materials are release assets, not Git objects.
+*.7z
+*.7z.*
+*.apk
+*.pak
+*.jks
+*.keystore
+*.p12
+*.pfx
+.env
+.env.*
+.gradle/
+.android-home/
+**/build/
+**/build-codex/
+**/build-vr/
+**/.cxx/
+**/__pycache__/
