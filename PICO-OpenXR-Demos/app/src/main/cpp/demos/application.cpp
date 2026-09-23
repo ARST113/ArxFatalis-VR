@@ -1138,7 +1138,10 @@ void Application::layout() {
 
 void Application::haptic(int leftright, float amplitude, float frequency/*not used now*/, float duration/*seconds*/) {
     if (mHapticCallback) {
-        mHapticCallback(mHapticCallbackArg, leftright, amplitude, frequency, duration);
+        // hapticCallback expects amplitude, duration in seconds, then frequency.
+        // Keep Application::haptic's public call order (amplitude, frequency, duration)
+        // and translate it here before crossing the callback ABI.
+        mHapticCallback(mHapticCallbackArg, leftright, amplitude, duration, frequency);
     }
 }
 
