@@ -1,17 +1,19 @@
 name: ArxVR Phase 4 integration helper
 
 on:
-  push:
+  pull_request:
     branches:
-      - vr-foundation-phase1
+      - main
     paths:
       - 'tools/arxvr_apply_phase4_live_integration.py'
+      - '.github/workflows/arxvr-phase4-integrate.yml'
 
 permissions:
   contents: write
 
 jobs:
   integrate:
+    if: github.head_ref == 'vr-foundation-phase1'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
