@@ -1,0 +1,38 @@
+name: ArxVR Phase 4 integration helper
+
+on:
+  push:
+    branches:
+      - vr-foundation-phase1
+    paths:
+      - 'tools/arxvr_apply_phase4_live_integration.py'
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: vr-foundation-phase1
+          fetch-depth: 0
+      - name: Apply guarded ArxGame integration patch
+        run: python3 tools/arxvr_apply_phase4_live_integration.py
+      - name: Commit live integration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if git diff --quiet -- ArxAndroid/src/core/ArxGame.cpp; then
+            echo "No integration diff produced" >&2
+            exit 1
+          fi
+          git diff --check
+          git diff --stat
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add ArxAndroid/src/core/ArxGame.cpp
+          git commit -m "Wire unified VR impact gate into live physical combat"
+          git push origin HEAD:vr-foundation-phase1
