@@ -258,7 +258,13 @@ new_routing = """\tconst bool equippedMeleeActive = equippedWeapon && equippedPr
 \t}
 \tconst bool secondaryWeaponGripActive = equippedMeleeActive
 \t                                    && g_vrWeaponSystem.twoHanded();
-\tif(!leftDragging && !secondaryWeaponGripActive) {
+\tif(secondaryWeaponGripActive) {
+\t\t// The off hand is owned by the two-hand weapon constraint while latched.
+\t\t// Discard any previously banked fist trajectory without clearing the
+\t\t// hand's cooldown/retraction state, so releasing a brief two-hand grip
+\t\t// cannot resume a stale fist swing in the same physical squeeze.
+\t\tg_vrInteractions.resetGesture(arxvr::VrHand::Left);
+\t} else if(!leftDragging) {
 \t\tupdateVrFistCombat(false, haveLeftHand, leftHandPosition,
 \t\t                  arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
 \t\t                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
@@ -273,6 +279,7 @@ for required in (
     "g_vrWeaponSystem.update(profile, tracking)",
     "g_vrWeaponSystem.buildContactSegment(profile, weaponPose)",
     "secondaryWeaponGripActive",
+    "g_vrInteractions.resetGesture(arxvr::VrHand::Left)",
     "rightHandOrientation * Vec3f(0.f, 1.f, 0.f)",
     '<< " twoHanded=" << weaponPose.twoHanded',
 ):
