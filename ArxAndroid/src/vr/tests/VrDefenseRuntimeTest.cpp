@@ -322,7 +322,7 @@ void testResetClearsAllPublishedDefenseState() {
 	                                             { 0.f, 0.f, 20.f }, { 0.f, 0.f, -20.f });
 	VrDefenseEvent event;
 	assert(runtime.evaluatePlayerDefense(3, 5, parryContact, 2.f, event));
-	assert(runtime.defenceLatched(3, 5, 1020000));
+	assert(runtime.defenseLatched(3, 5, 1020000));
 
 	runtime.resetSession();
 	assert(!runtime.shield().active);
