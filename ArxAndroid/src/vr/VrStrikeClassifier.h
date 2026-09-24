@@ -23,6 +23,11 @@ struct VrStrikeProfile {
 	float minPeakSpeed = 110.f;
 	float minAverageSpeed = 70.f;
 	float minTerminalSpeed = 70.f;
+	// Real impacts commonly happen just after peak hand velocity. Preserve a
+	// short follow-through window so contact during deliberate deceleration can
+	// still qualify without allowing an almost stationary hand to deal damage.
+	float minFollowThroughSpeed = 35.f;
+	float maxFollowThroughToPeakRatio = 0.72f;
 	float minPathLength = 6.5f;
 	float minDirectionalConsistency = 0.55f;
 	float minEnergy = 700.f;
@@ -41,6 +46,8 @@ inline constexpr VrStrikeProfile vrHeldObjectStrikeProfile() {
 	profile.minPeakSpeed = 95.f;
 	profile.minAverageSpeed = 60.f;
 	profile.minTerminalSpeed = 60.f;
+	profile.minFollowThroughSpeed = 30.f;
+	profile.maxFollowThroughToPeakRatio = 0.78f;
 	profile.minPathLength = 8.f;
 	profile.minDirectionalConsistency = 0.48f;
 	profile.minEnergy = 700.f;
@@ -171,11 +178,16 @@ public:
 
 	static bool qualifies(const VrStrikeMetrics & metrics,
 	                      const VrStrikeProfile & profile) {
+		const bool directContact = metrics.terminalSpeed >= profile.minTerminalSpeed;
+		const bool controlledFollowThrough =
+			metrics.terminalSpeed >= profile.minFollowThroughSpeed
+			&& metrics.terminalSpeed
+			   <= metrics.peakSpeed * profile.maxFollowThroughToPeakRatio;
 		return metrics.valid
 		    && metrics.sampleCount >= 3
 		    && metrics.peakSpeed >= profile.minPeakSpeed
 		    && metrics.averageSpeed >= profile.minAverageSpeed
-		    && metrics.terminalSpeed >= profile.minTerminalSpeed
+		    && (directContact || controlledFollowThrough)
 		    && metrics.pathLength >= profile.minPathLength
 		    && metrics.directionalConsistency >= profile.minDirectionalConsistency
 		    && metrics.energy >= profile.minEnergy;
