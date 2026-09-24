@@ -1,0 +1,220 @@
+name: ArxVR Android clean build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'ArxAndroid/**'
+      - 'ArxVR-Android/**'
+      - 'PICO-OpenXR-Demos/**'
+      - '.github/workflows/arxvr-android.yml'
+  push:
+    branches:
+      - 'vr-*'
+    paths:
+      - 'ArxAndroid/**'
+      - 'ArxVR-Android/**'
+      - 'PICO-OpenXR-Demos/**'
+      - '.github/workflows/arxvr-android.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arxvr-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      NDK_VERSION: 27.0.12077973
+      CMAKE_VERSION: 3.22.1
+      BUILD_TOOLS_VERSION: 35.0.0
+      SDL_COMMIT: 5d249570393f7a37e037abf22cd6012a4cc56a71
+      ANDROID_DEPS_COMMIT: 983964fefe89ab0402f74415512536aa89cea680
+      PICO_OPENXR_COMMIT: 292f3116d8a7d9646f8fbdf1848020e0542eadf4
+
+    steps:
+      - name: Checkout ArxFatalis-VR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;${BUILD_TOOLS_VERSION}" \
+            "ndk;${NDK_VERSION}" \
+            "cmake;${CMAKE_VERSION}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Restore exact source dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          git init SDL2
+          git -C SDL2 remote add origin https://github.com/libsdl-org/SDL.git
+          git -C SDL2 fetch --depth 1 origin "${SDL_COMMIT}"
+          git -C SDL2 checkout --detach FETCH_HEAD
+
+          git init android-deps
+          git -C android-deps remote add origin https://github.com/sandstranger/com.mobilerpgpack.phone.git
+          git -C android-deps fetch --depth 1 origin "${ANDROID_DEPS_COMMIT}"
+          git -C android-deps checkout --detach FETCH_HEAD
+
+          git init .ci-pico-upstream
+          git -C .ci-pico-upstream remote add origin https://github.com/picoxr/OpenXR_Demos.git
+          git -C .ci-pico-upstream fetch --depth 1 origin "${PICO_OPENXR_COMMIT}"
+          git -C .ci-pico-upstream checkout --detach FETCH_HEAD
+
+          mkdir -p PICO-OpenXR-Demos/app/src/main/cpp/openxr_loader/lib/arm64-v8a
+          mkdir -p PICO-OpenXR-Demos/app/src/main/cpp/third/assimp/lib/arm64-v8a
+          cp .ci-pico-upstream/app/src/main/cpp/openxr_loader/lib/arm64-v8a/libopenxr_loader.so \
+             PICO-OpenXR-Demos/app/src/main/cpp/openxr_loader/lib/arm64-v8a/
+          cp .ci-pico-upstream/app/src/main/cpp/third/assimp/lib/arm64-v8a/libassimp.so \
+             PICO-OpenXR-Demos/app/src/main/cpp/third/assimp/lib/arm64-v8a/
+
+          test -f SDL2/include/SDL.h
+          test -f android-deps/app/src/main/jni/etcpaksources/CMakeLists.txt
+          test -s PICO-OpenXR-Demos/app/src/main/cpp/openxr_loader/lib/arm64-v8a/libopenxr_loader.so
+          test -s PICO-OpenXR-Demos/app/src/main/cpp/third/assimp/lib/arm64-v8a/libassimp.so
+
+      - name: Clean-build OpenXR host with ndk-build -B
+        shell: bash
+        run: |
+          set -euxo pipefail
+          HOST_OUT="${RUNNER_TEMP}/arxvr-host"
+          rm -rf "${HOST_OUT}"
+          mkdir -p "${HOST_OUT}/obj" "${HOST_OUT}/lib"
+
+          "${ANDROID_NDK_ROOT}/ndk-build" -B \
+            NDK_PROJECT_PATH=null \
+            APP_BUILD_SCRIPT="${GITHUB_WORKSPACE}/PICO-OpenXR-Demos/app/src/main/cpp/Android.mk" \
+            NDK_APPLICATION_MK="${GITHUB_WORKSPACE}/PICO-OpenXR-Demos/app/src/main/cpp/Application.mk" \
+            APP_ABI=arm64-v8a \
+            NDK_ALL_ABIS=arm64-v8a \
+            APP_PLATFORM=android-29 \
+            NDK_OUT="${HOST_OUT}/obj" \
+            NDK_LIBS_OUT="${HOST_OUT}/lib" \
+            C_SHARED_INCLUDE="${GITHUB_WORKSPACE}" \
+            -j2 \
+            NDK_DEBUG=1
+
+          test -s "${HOST_OUT}/lib/arm64-v8a/libopenxr_demos.so"
+          echo "ARXVR_HOST_LIB_DIR=${HOST_OUT}/lib/arm64-v8a" >> "${GITHUB_ENV}"
+
+      - name: Stage OpenXR host into combined application
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DEST="ArxVR-Android/app/src/main/jniLibs/arm64-v8a"
+          rm -rf "ArxVR-Android/app/src/main/jniLibs"
+          mkdir -p "${DEST}"
+
+          cp "${ARXVR_HOST_LIB_DIR}/libopenxr_demos.so" "${DEST}/"
+          cp PICO-OpenXR-Demos/app/src/main/cpp/openxr_loader/lib/arm64-v8a/libopenxr_loader.so "${DEST}/"
+          cp PICO-OpenXR-Demos/app/src/main/cpp/third/assimp/lib/arm64-v8a/libassimp.so "${DEST}/"
+
+          ls -lh "${DEST}"
+
+      - name: Clean-build combined ArxVR APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf ArxVR-Android/.gradle ArxVR-Android/app/build
+          gradle --no-daemon --stacktrace -p ArxVR-Android clean :app:assembleDebug
+
+      - name: Verify APK contents and native ABI
+        id: verify
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APK="$(find ArxVR-Android/app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -type f | head -n 1)"
+          test -n "${APK}"
+          test -s "${APK}"
+
+          unzip -l "${APK}" | tee "${RUNNER_TEMP}/apk-files.txt"
+          for lib in \
+            libarx.so \
+            libopenxr_demos.so \
+            libopenxr_loader.so \
+            libassimp.so \
+            libSDL2.so \
+            libOpenAL.so \
+            libc++_shared.so
+          do
+            grep -q "lib/arm64-v8a/${lib}" "${RUNNER_TEMP}/apk-files.txt"
+          done
+
+          mkdir -p "${RUNNER_TEMP}/apk-native"
+          unzip -p "${APK}" lib/arm64-v8a/libarx.so > "${RUNNER_TEMP}/apk-native/libarx.so"
+          unzip -p "${APK}" lib/arm64-v8a/libopenxr_demos.so > "${RUNNER_TEMP}/apk-native/libopenxr_demos.so"
+
+          "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D \
+            "${RUNNER_TEMP}/apk-native/libarx.so" | tee "${RUNNER_TEMP}/libarx-symbols.txt"
+          grep -q "arxvr_engine_start" "${RUNNER_TEMP}/libarx-symbols.txt"
+          grep -q "arxvr_poll_haptic" "${RUNNER_TEMP}/libarx-symbols.txt"
+          grep -q "arxvr_update_tracking" "${RUNNER_TEMP}/libarx-symbols.txt"
+
+          "${ANDROID_SDK_ROOT}/build-tools/${BUILD_TOOLS_VERSION}/aapt" dump badging "${APK}" \
+            | tee "${RUNNER_TEMP}/apk-badging.txt"
+          grep -q "package: name='com.arxvr.android'" "${RUNNER_TEMP}/apk-badging.txt"
+
+          SHA256="$(sha256sum "${APK}" | awk '{print $1}')"
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          OUTPUT="ArxFatalis-VR-${SHORT_SHA}-debug.apk"
+          cp "${APK}" "${OUTPUT}"
+          echo "${SHA256}  ${OUTPUT}" | tee "${OUTPUT}.sha256"
+
+          echo "apk=${OUTPUT}" >> "${GITHUB_OUTPUT}"
+          echo "sha256=${SHA256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArxFatalis-VR-${{ github.sha }}-debug
+          path: |
+            ${{ steps.verify.outputs.apk }}
+            ${{ steps.verify.outputs.apk }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build summary
+        shell: bash
+        run: |
+          {
+            echo "## ArxFatalis-VR clean Android build"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- APK: \`${{ steps.verify.outputs.apk }}\`"
+            echo "- SHA-256: \`${{ steps.verify.outputs.sha256 }}\`"
+            echo "- ABI: \`arm64-v8a\`"
+            echo "- Host: full \`ndk-build -B\`"
+            echo "- Engine: clean CMake/Gradle build"
+            echo
+            echo "The CI APK intentionally does not bundle proprietary Arx Fatalis PAK files."
+            echo "Physical PICO QA still requires valid game data in the app's external files directory."
+          } >> "${GITHUB_STEP_SUMMARY}"
