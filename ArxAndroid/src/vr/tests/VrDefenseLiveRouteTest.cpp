@@ -138,6 +138,42 @@ void testTrackingDiscontinuityCannotFabricateDefense() {
 	assert(!runtime.defenseLatched(1900, 2100, secondTime));
 }
 
+void testOverlappingDefendedStrikesKeepIndependentLatches() {
+	VrDefenseRuntime runtime;
+	const std::uint64_t firstStart = 6000000;
+	const std::uint64_t firstImpact = 6010000;
+	runtime.publishShield(2200, VrShieldProfile{}, makeShieldPose(), firstImpact);
+
+	const VrIncomingContact firstHit = makeIncomingSweep(
+		runtime, 2300, 2400, firstStart, firstImpact);
+	VrDefenseEvent firstEvent;
+	assert(runtime.evaluatePlayerDefense(2300, 2500, firstHit, 2.f, firstEvent));
+	assert(firstEvent.type == VrDefenseEventType::ShieldBlock);
+
+	// Start a second defended NPC strike after the shield classifier debounce has
+	// elapsed while the first strike's 300 ms whole-strike latch is still active.
+	const std::uint64_t secondStart = 6160000;
+	const std::uint64_t secondImpact = 6170000;
+	runtime.publishShield(2200, VrShieldProfile{}, makeShieldPose(), secondImpact);
+	const VrIncomingContact secondHit = makeIncomingSweep(
+		runtime, 2301, 2401, secondStart, secondImpact);
+	VrDefenseEvent secondEvent;
+	assert(runtime.evaluatePlayerDefense(2301, 2501, secondHit, 2.f, secondEvent));
+	assert(secondEvent.type == VrDefenseEventType::ShieldBlock);
+
+	// A single mutable latch would lose the first key here. Both defended weapon
+	// strikes must remain suppressed independently until their own expiry times.
+	assert(runtime.defenseLatched(2300, 2500, secondImpact + 1000));
+	assert(runtime.defenseLatched(2301, 2501, secondImpact + 1000));
+
+	const std::uint64_t firstExpired = firstImpact + 300001;
+	assert(!runtime.defenseLatched(2300, 2500, firstExpired));
+	assert(runtime.defenseLatched(2301, 2501, firstExpired));
+
+	runtime.resetSession();
+	assert(!runtime.defenseLatched(2301, 2501, firstExpired));
+}
+
 } // namespace
 
 int main() {
@@ -146,5 +182,6 @@ int main() {
 	testStaleWeaponFallsBackToFreshShield();
 	testStrikeLatchOnlySuppressesMatchingStrike();
 	testTrackingDiscontinuityCannotFabricateDefense();
+	testOverlappingDefendedStrikesKeepIndependentLatches();
 	return 0;
 }
