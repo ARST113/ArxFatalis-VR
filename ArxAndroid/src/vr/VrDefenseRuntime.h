@@ -374,14 +374,20 @@ private:
 			return;
 		}
 
-		DefenseLatch * target = nullptr;
-		DefenseLatch * oldest = &m_latches[0];
+		// Preserve an existing key before considering reusable slots. This avoids
+		// creating duplicate entries when an expired slot appears earlier in the
+		// table than the still-active entry for the same NPC weapon strike.
 		for(DefenseLatch & latch : m_latches) {
 			if(latch.active && latch.sourceToken == sourceToken
 			   && latch.strikeToken == strikeToken) {
-				target = &latch;
-				break;
+				storeDefenseLatch(latch, sourceToken, strikeToken, type, timestampUs);
+				return;
 			}
+		}
+
+		DefenseLatch * target = nullptr;
+		DefenseLatch * oldest = &m_latches[0];
+		for(DefenseLatch & latch : m_latches) {
 			if(!latch.active) {
 				target = &latch;
 				break;
@@ -395,15 +401,20 @@ private:
 				oldest = &latch;
 			}
 		}
-		if(!target) {
-			target = oldest;
-		}
+		storeDefenseLatch(target ? *target : *oldest,
+		                 sourceToken, strikeToken, type, timestampUs);
+	}
 
-		target->sourceToken = sourceToken;
-		target->strikeToken = strikeToken;
-		target->type = type;
-		target->timestampUs = timestampUs;
-		target->active = true;
+	static void storeDefenseLatch(DefenseLatch & latch,
+	                              std::uint64_t sourceToken,
+	                              std::uint64_t strikeToken,
+	                              VrDefenseEventType type,
+	                              std::uint64_t timestampUs) {
+		latch.sourceToken = sourceToken;
+		latch.strikeToken = strikeToken;
+		latch.type = type;
+		latch.timestampUs = timestampUs;
+		latch.active = true;
 	}
 
 	IncomingHistory & findOrAllocateHistory(std::uint64_t sourceToken,
