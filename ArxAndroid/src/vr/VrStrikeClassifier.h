@@ -32,6 +32,11 @@ struct VrStrikeProfile {
 	float minDirectionalConsistency = 0.55f;
 	float minEnergy = 700.f;
 	float rearmSpeed = 40.f;
+	// After a consumed impact the hand must physically move away from the
+	// contact point before a new strike can be armed. This complements the time
+	// cooldown and prevents tiny oscillations near a target from becoming the
+	// optimal attack pattern.
+	float minRearmDistance = 5.f;
 	float maxInstantSpeed = 1000.f;
 };
 
@@ -52,6 +57,7 @@ inline constexpr VrStrikeProfile vrHeldObjectStrikeProfile() {
 	profile.minDirectionalConsistency = 0.48f;
 	profile.minEnergy = 700.f;
 	profile.rearmSpeed = 35.f;
+	profile.minRearmDistance = 7.f;
 	profile.maxInstantSpeed = 1400.f;
 	return profile;
 }
