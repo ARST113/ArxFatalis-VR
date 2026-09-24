@@ -174,40 +174,50 @@ public:
 		                          && sample.secondaryGripPressed
 		                          && sample.secondaryValid
 		                          && vrVectorFinite(sample.secondaryPosition);
-		const float anchorDistance = secondaryUsable
-		                           ? vrVectorLength(vrWeaponVectorSubtract(
-		                                 sample.secondaryPosition, pose.secondaryGripAnchor))
-		                           : 0.f;
 		const float handSeparation = secondaryUsable
 		                           ? vrVectorLength(vrWeaponVectorSubtract(
 		                                 sample.primaryPosition, sample.secondaryPosition))
 		                           : 0.f;
 		const bool geometryUsable = secondaryUsable
-		                         && std::isfinite(anchorDistance)
 		                         && std::isfinite(handSeparation)
 		                         && handSeparation >= m_config.minimumHandSeparation;
 
-		if(m_twoHanded) {
-			if(!geometryUsable || anchorDistance > m_config.secondaryReleaseDistance) {
-				m_twoHanded = false;
+		if(!m_twoHanded) {
+			const float engageDistance = geometryUsable
+			                           ? vrVectorLength(vrWeaponVectorSubtract(
+			                                 sample.secondaryPosition,
+			                                 pose.secondaryGripAnchor))
+			                           : 0.f;
+			if(geometryUsable && std::isfinite(engageDistance)
+			   && engageDistance <= m_config.secondaryEngageDistance) {
+				m_twoHanded = true;
 			}
-		} else if(geometryUsable && anchorDistance <= m_config.secondaryEngageDistance) {
-			m_twoHanded = true;
 		}
 
 		if(m_twoHanded) {
 			VrImpactVector3 constrainedForward{};
-			if(!vrWeaponNormalize(vrWeaponVectorSubtract(
-			       sample.primaryPosition, sample.secondaryPosition), constrainedForward)) {
+			VrImpactVector3 constrainedRight{};
+			VrImpactVector3 constrainedUp{};
+			if(!geometryUsable
+			   || !vrWeaponNormalize(vrWeaponVectorSubtract(
+			          sample.primaryPosition, sample.secondaryPosition), constrainedForward)
+			   || !vrWeaponBuildBasis(constrainedForward, sample.primaryUp,
+			                          constrainedForward, constrainedRight, constrainedUp)) {
 				m_twoHanded = false;
 			} else {
-				pose.forward = constrainedForward;
-				VrImpactVector3 constrainedRight{};
-				VrImpactVector3 constrainedUp{};
-				if(vrWeaponBuildBasis(pose.forward, sample.primaryUp,
-				                      constrainedForward, constrainedRight, constrainedUp)) {
-					pose.forward = constrainedForward;
-					pose.up = constrainedUp;
+				VrWeaponPose constrainedPose = pose;
+				constrainedPose.forward = constrainedForward;
+				constrainedPose.up = constrainedUp;
+				constrainedPose.twoHanded = true;
+				constrainedPose.secondaryGripAnchor =
+					vrWeaponSecondaryGripAnchor(profile, constrainedPose);
+				const float releaseDistance = vrVectorLength(vrWeaponVectorSubtract(
+					sample.secondaryPosition, constrainedPose.secondaryGripAnchor));
+				if(!std::isfinite(releaseDistance)
+				   || releaseDistance > m_config.secondaryReleaseDistance) {
+					m_twoHanded = false;
+				} else {
+					pose = constrainedPose;
 				}
 			}
 		}
