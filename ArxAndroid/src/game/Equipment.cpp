@@ -634,23 +634,24 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 		}
 
 #if defined(ARXVR_ANDROID_BUILD)
-		bool vrShieldBlocked = false;
+		bool vrHaveIncomingWeapon = false;
+		std::uint64_t vrDefenseSourceToken = 0;
+		std::uint64_t vrDefenseStrikeToken = 0;
+		std::uint64_t vrDefenseActionToken = 0;
+		std::uint64_t vrDefenseTimestampUs = 0;
+		arxvr::VrIncomingContact vrIncomingWeapon;
 		if(io_source != entities.player()) {
-			const std::uint64_t sourceToken = static_cast<std::uint64_t>(
+			vrDefenseSourceToken = static_cast<std::uint64_t>(
 				reinterpret_cast<std::uintptr_t>(io_source));
-			const std::uint64_t actionToken = static_cast<std::uint64_t>(
-				reinterpret_cast<std::uintptr_t>(io_weapon))
+			vrDefenseStrikeToken = static_cast<std::uint64_t>(
+				reinterpret_cast<std::uintptr_t>(io_weapon));
+			vrDefenseActionToken = vrDefenseStrikeToken
 				^ (static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&action)) << 1u);
-			arxvr::VrDefenseEvent defenseEvent;
-			vrShieldBlocked = arxvr::vrDefenseRuntime().sampleShieldBlock(
-				sourceToken, actionToken,
+			vrDefenseTimestampUs = arxvr::vrDefenseNowMicros();
+			vrHaveIncomingWeapon = arxvr::vrDefenseRuntime().sampleIncomingWeapon(
+				vrDefenseSourceToken, vrDefenseActionToken,
 				{ sphere.origin.x, sphere.origin.y, sphere.origin.z },
-				arxvr::vrDefenseNowMicros(), defenseEvent);
-			if(vrShieldBlocked) {
-				const float strength = std::clamp(defenseEvent.relativeSpeed / 3000.f,
-				                                  0.35f, 1.f);
-				arxvrEmitHaptic(VrHapticHand::Left, VrHapticEvent::Block, strength);
-			}
+				vrDefenseTimestampUs, vrIncomingWeapon);
 		}
 #endif
 
@@ -689,11 +690,39 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 					Vec3f pos = target->obj->vertexWorldPositions[hitpoint].v;
 
 #if defined(ARXVR_ANDROID_BUILD)
-					// A physical shield block consumes only this NPC equipment strike.
-					// Generic damage, spells and environmental sources continue through
-					// their existing pipelines unchanged.
-					if(target == entities.player() && vrShieldBlocked) {
-						continue;
+					if(target == entities.player() && io_source != entities.player()) {
+						arxvr::VrDefenseRuntime & vrDefense = arxvr::vrDefenseRuntime();
+						bool vrDefenseConsumed = vrDefense.defenseLatched(
+							vrDefenseSourceToken, vrDefenseStrikeToken, vrDefenseTimestampUs);
+						arxvr::VrDefenseEvent defenseEvent;
+						bool vrFreshDefense = false;
+						if(!vrDefenseConsumed && vrHaveIncomingWeapon) {
+							vrDefenseConsumed = vrDefense.evaluatePlayerDefense(
+								vrDefenseSourceToken, vrDefenseStrikeToken, vrIncomingWeapon,
+								std::max(rad, 1.f), defenseEvent);
+							vrFreshDefense = vrDefenseConsumed;
+						}
+						if(vrDefenseConsumed) {
+							if(vrFreshDefense) {
+								const float strength = std::clamp(defenseEvent.relativeSpeed / 3000.f,
+								                                  0.35f, 1.f);
+								if(defenseEvent.type == arxvr::VrDefenseEventType::WeaponParry) {
+									arxvrEmitHaptic(VrHapticHand::Right, VrHapticEvent::Parry, strength);
+									arxvrEmitHaptic(VrHapticHand::Left, VrHapticEvent::Parry, strength);
+								} else {
+									arxvrEmitHaptic(VrHapticHand::Left, VrHapticEvent::Block, strength);
+								}
+								const std::string_view attackerMaterial = io_weapon->weaponmaterial.empty()
+								                                        ? std::string_view("metal")
+								                                        : std::string_view(io_weapon->weaponmaterial);
+								const Vec3f defensePosition(defenseEvent.position.x,
+								                            defenseEvent.position.y,
+								                            defenseEvent.position.z);
+								ARX_SOUND_PlayCollision(attackerMaterial, "metal", 1.f, 1.f,
+								                        defensePosition, nullptr);
+							}
+							continue;
+						}
 					}
 #endif
 

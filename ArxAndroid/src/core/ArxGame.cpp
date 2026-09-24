@@ -719,6 +719,15 @@ static void updateVrEquippedWeaponCombat(bool rightHand, bool haveHand,
 	const arxvr::VrWeaponSegment segment =
 		g_vrWeaponSystem.buildContactSegment(profile, weaponPose);
 
+	// Keep the physical player weapon available to the incoming-melee
+	// defense adapter even when this frame is not itself an outgoing hit.
+	if(segment.valid && weaponPose.valid && allowHit) {
+		arxvr::vrDefenseRuntime().publishDefenderWeapon(
+			tracking.weaponToken, segment, timestampUs);
+	} else {
+		arxvr::vrDefenseRuntime().clearDefenderWeapon();
+	}
+
 	arxvr::VrImpactSample sample;
 	sample.motion.timestampUs = timestampUs;
 	if(segment.valid) {
