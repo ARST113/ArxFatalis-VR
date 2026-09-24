@@ -98,10 +98,28 @@ void cooldownRequiresSlowRearm() {
 	expect(!classifier.armed(), "classifier must remain disarmed during cooldown");
 	classifier.update(sample(14.5f, 2.f, 440000), profile);
 	expect(classifier.armed(), "slow hand after cooldown should rearm classifier");
+	expect(classifier.metrics().sampleCount == 1,
+	       "rearm should establish a fresh motion-history baseline");
 
 	feedPunch(classifier, 460000, 14.5f, profile);
 	expect(classifier.canStrike(profile), "second deliberate punch should qualify after rearm");
 	expect(classifier.consumeStrike(profile), "second strike should be consumable");
+}
+
+void gestureHistoryResetPreservesCooldown() {
+	arxvr::VrStrikeClassifier classifier;
+	const auto profile = arxvr::vrFistStrikeProfile();
+	feedPunch(classifier, 0, 0.f, profile);
+	expect(classifier.consumeStrike(profile), "fixture strike should be consumed");
+	const std::uint64_t rearmAt = classifier.rearmNotBeforeUs();
+
+	classifier.resetHistory();
+	expect(!classifier.armed(), "gesture reset must not rearm a consumed strike");
+	expect(classifier.rearmNotBeforeUs() == rearmAt,
+	       "gesture reset must preserve the established cooldown deadline");
+	feedPunch(classifier, 100000, 30.f, profile);
+	expect(!classifier.canStrike(profile),
+	       "closing a new gesture during cooldown must not create another hit");
 }
 
 void curvedSwingQualifies() {
@@ -135,6 +153,15 @@ void invalidAndOutOfOrderSamplesFailSafe() {
 	       "invalid sample should clear potentially corrupted history");
 	expect(!classifier.armed(),
 	       "invalid tracking sample must fail closed until a slow rearm");
+
+	classifier.clear();
+	classifier.update(sample(0.f, 0.f, 200000), profile);
+	classifier.invalidateTracking(220000, profile);
+	expect(classifier.metrics().sampleCount == 0,
+	       "explicit tracking loss should clear motion history");
+	expect(!classifier.armed(), "explicit tracking loss should disarm classifier");
+	expect(classifier.rearmNotBeforeUs() == 220000 + profile.cooldownUs,
+	       "tracking loss should establish a full cooldown from loss time");
 }
 
 } // namespace
@@ -145,6 +172,7 @@ int main() {
 	slowMotionIsRejected();
 	trackingJumpResetsHistory();
 	cooldownRequiresSlowRearm();
+	gestureHistoryResetPreservesCooldown();
 	curvedSwingQualifies();
 	invalidAndOutOfOrderSamplesFailSafe();
 
