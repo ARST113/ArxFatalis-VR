@@ -35,13 +35,19 @@ arxvr::VrImpactSample weaponSample(float x, float y, std::uint64_t timestampUs,
 
 void feedWeaponSwing(arxvr::VrInteractionSystem & system,
                      const arxvr::VrWeaponProfile & profile,
-                     std::uint64_t token, float effectiveMass) {
+                     std::uint64_t token, float effectiveMass,
+                     std::uint64_t startUs = 0, float offsetX = 0.f) {
 	const arxvr::VrHand hand = arxvr::VrHand::Right;
-	system.updateHand(hand, weaponSample(0.f, 0.f, 0, token, profile, effectiveMass));
-	system.updateHand(hand, weaponSample(2.f, 0.2f, 20000, token, profile, effectiveMass));
-	system.updateHand(hand, weaponSample(5.f, 0.6f, 40000, token, profile, effectiveMass));
-	system.updateHand(hand, weaponSample(9.f, 1.2f, 60000, token, profile, effectiveMass));
-	system.updateHand(hand, weaponSample(14.f, 2.f, 80000, token, profile, effectiveMass));
+	system.updateHand(hand, weaponSample(offsetX + 0.f, 0.f, startUs + 0,
+	                                    token, profile, effectiveMass));
+	system.updateHand(hand, weaponSample(offsetX + 2.f, 0.2f, startUs + 20000,
+	                                    token, profile, effectiveMass));
+	system.updateHand(hand, weaponSample(offsetX + 5.f, 0.6f, startUs + 40000,
+	                                    token, profile, effectiveMass));
+	system.updateHand(hand, weaponSample(offsetX + 9.f, 1.2f, startUs + 60000,
+	                                    token, profile, effectiveMass));
+	system.updateHand(hand, weaponSample(offsetX + 14.f, 2.f, startUs + 80000,
+	                                    token, profile, effectiveMass));
 }
 
 void defaultProfilesHaveSafeOrdering() {
@@ -111,6 +117,26 @@ void malformedMassFailsToNeutralMass() {
 	       "non-finite effective mass should be neutralized at the hand-state boundary");
 }
 
+void switchingWeaponProfileCannotBypassPreviousCooldown() {
+	const auto oneHanded = arxvr::vrDefaultWeaponProfile(arxvr::VrWeaponClass::OneHanded);
+	const auto dagger = arxvr::vrDefaultWeaponProfile(arxvr::VrWeaponClass::Dagger);
+	arxvr::VrInteractionSystem system;
+	feedWeaponSwing(system, oneHanded, 0x401u, oneHanded.effectiveMass);
+	arxvr::VrImpactEvent firstImpact;
+	expect(system.consumeImpact(arxvr::VrHand::Right, firstImpact),
+	       "first weapon should establish a real cooldown/retraction boundary");
+
+	// Start the replacement weapon at the previous contact point and move far
+	// enough to satisfy retraction, but remain well inside the original 300 ms
+	// cooldown. A profile/token transition may clear path history only.
+	feedWeaponSwing(system, dagger, 0x402u, dagger.effectiveMass, 100000, 14.f);
+	expect(!system.canImpact(arxvr::VrHand::Right),
+	       "swapping to a faster weapon profile must not clear the previous cooldown");
+	arxvr::VrImpactEvent secondImpact;
+	expect(!system.consumeImpact(arxvr::VrHand::Right, secondImpact),
+	       "weapon swapping must not emit a second impact during the inherited cooldown");
+}
+
 } // namespace
 
 int main() {
@@ -118,6 +144,7 @@ int main() {
 	profileOverrideActuallyControlsQualification();
 	weaponMassReachesSemanticImpact();
 	malformedMassFailsToNeutralMass();
+	switchingWeaponProfileCannotBypassPreviousCooldown();
 
 	if(g_failures != 0) {
 		std::cerr << g_failures << " weapon-profile test(s) failed\n";
