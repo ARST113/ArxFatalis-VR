@@ -1098,7 +1098,11 @@ void Application::inputEvent(int leftright, const ApplicationEvent& event) {
     const float previousSqueeze = mControllerEvent[leftright].squeeze;
     mControllerEvent[leftright] = event;
     mHands->setFingerCurl(leftright, event.trigger, event.squeeze);
-    if (previousSqueeze < 0.55f && event.squeeze >= 0.55f) {
+    // Preserve the PICO sample's generic squeeze feedback only while the Arx
+    // engine is not running. Gameplay haptics are semantic events from libarx;
+    // firing both paths would double-buzz every successful grab.
+    if (mArxEngineStatus != 1
+        && previousSqueeze < 0.55f && event.squeeze >= 0.55f) {
         haptic(leftright, 0.35f, 0.0f, 0.035f);
     }
 
