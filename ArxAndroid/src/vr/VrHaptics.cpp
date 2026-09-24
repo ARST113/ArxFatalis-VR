@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "vr/AndroidVrBridge.h"
+#include "vr/VrConfig.h"
 
 namespace {
 
@@ -35,8 +36,17 @@ HapticPreset presetFor(VrHapticEvent event) {
 
 void arxvrEmitHaptic(VrHapticHand hand, VrHapticEvent event, float strength) {
 	const HapticPreset preset = presetFor(event);
-	const float safeStrength = std::clamp(strength, 0.f, 1.f);
-	if(preset.amplitude <= 0.f || preset.durationSeconds <= 0.f || safeStrength <= 0.f) {
+	const float eventStrength = std::clamp(strength, 0.f, 1.f);
+	if(preset.amplitude <= 0.f || preset.durationSeconds <= 0.f || eventStrength <= 0.f) {
+		return;
+	}
+
+	// System properties are the temporary settings surface for the Android port.
+	// Reading the typed config here keeps haptic strength live-reloadable without
+	// coupling gameplay call sites to Android or OpenXR details.
+	const float configuredStrength = arxvrLoadRuntimeConfig().hapticStrength;
+	const float effectiveStrength = eventStrength * configuredStrength;
+	if(effectiveStrength <= 0.f) {
 		return;
 	}
 
@@ -44,7 +54,7 @@ void arxvrEmitHaptic(VrHapticHand hand, VrHapticEvent event, float strength) {
 	request.version = ARXVR_HAPTIC_REQUEST_VERSION;
 	request.hand = static_cast<std::uint32_t>(hand);
 	request.event = static_cast<std::uint32_t>(event);
-	request.amplitude = std::clamp(preset.amplitude * safeStrength, 0.f, 1.f);
+	request.amplitude = std::clamp(preset.amplitude * effectiveStrength, 0.f, 1.f);
 	request.durationSeconds = preset.durationSeconds;
 	request.frequencyHz = preset.frequencyHz;
 	arxvrQueueHapticRequest(request);
