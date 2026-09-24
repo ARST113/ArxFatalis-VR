@@ -92,7 +92,9 @@ void testTimestampRegressionCreatesFreshBaseline() {
 	VrIncomingContact contact;
 	assert(!runtime.sampleIncomingWeapon(1, 2, { 0.f, 0.f, 20.f }, 1000, contact));
 	assert(!runtime.sampleIncomingWeapon(1, 2, { 0.f, 0.f, 10.f }, 900, contact));
-	assert(runtime.sampleIncomingWeapon(1, 2, { 0.f, 0.f, 0.f }, 1900, contact));
+	// The regressed sample becomes the new baseline. Advance far enough that the
+	// 10-unit recovery motion stays below the production teleport ceiling.
+	assert(runtime.sampleIncomingWeapon(1, 2, { 0.f, 0.f, 0.f }, 10900, contact));
 	assert(contact.start.z == 10.f);
 	assert(contact.end.z == 0.f);
 }
