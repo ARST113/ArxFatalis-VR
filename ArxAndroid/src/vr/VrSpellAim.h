@@ -37,6 +37,29 @@ inline float vrSpellLengthSquared(const VrSpellVector3 & value) {
 	return value.x * value.x + value.y * value.y + value.z * value.z;
 }
 
+inline bool vrSpellNormalizeDirection(const VrSpellVector3 & value,
+                                      VrSpellVector3 & normalized) {
+	normalized = {};
+	if(!vrSpellFinite(value)) {
+		return false;
+	}
+	const float lengthSquared = vrSpellLengthSquared(value);
+	if(!vrSpellFinite(lengthSquared) || lengthSquared <= 1.0e-8f) {
+		return false;
+	}
+	const float inverseLength = 1.f / std::sqrt(lengthSquared);
+	if(!vrSpellFinite(inverseLength)) {
+		return false;
+	}
+	normalized = { value.x * inverseLength, value.y * inverseLength,
+	               value.z * inverseLength };
+	if(!vrSpellFinite(normalized)) {
+		normalized = {};
+		return false;
+	}
+	return true;
+}
+
 class VrSpellAimService {
 public:
 	VrSpellAimRay update(const VrSpellAimSample & sample) {
@@ -46,26 +69,13 @@ public:
 			return m_ray;
 		}
 
-		const float lengthSquared = vrSpellLengthSquared(sample.forward);
-		if(!vrSpellFinite(lengthSquared) || lengthSquared <= 1.0e-8f) {
+		VrSpellVector3 normalized;
+		if(!vrSpellNormalizeDirection(sample.forward, normalized)) {
 			return m_ray;
 		}
-
-		const float inverseLength = 1.f / std::sqrt(lengthSquared);
-		if(!vrSpellFinite(inverseLength)) {
-			return m_ray;
-		}
-
 		m_ray.origin = sample.origin;
-		m_ray.direction = {
-			sample.forward.x * inverseLength,
-			sample.forward.y * inverseLength,
-			sample.forward.z * inverseLength,
-		};
-		m_ray.valid = vrSpellFinite(m_ray.direction);
-		if(!m_ray.valid) {
-			m_ray = {};
-		}
+		m_ray.direction = normalized;
+		m_ray.valid = true;
 		return m_ray;
 	}
 

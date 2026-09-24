@@ -43,6 +43,10 @@
 
 #include "util/Range.h"
 
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrSpellPlacement.h"
+#endif
+
 
 MassLightningStrikeSpell::MassLightningStrikeSpell()
 	: m_pos(0.f)
@@ -57,15 +61,27 @@ void MassLightningStrikeSpell::Launch() {
 	m_soundEffectPlayed = false;
 	
 	float beta;
+	bool displace = true;
 	if(m_caster == EntityHandle_Player) {
 		m_pos = player.pos + Vec3f(0.f, 150.f, 0.f);
 		beta = player.angle.getYaw();
+#if defined(ARXVR_ANDROID_BUILD)
+		arxvr::VrSpellPlacement vrPlacement;
+		if(arxvr::vrSpellHorizontalPlacement(arxvr::vrSpellAimService().ray(),
+		                                     m_pos.y, 500.f, vrPlacement)) {
+			m_pos = Vec3f(vrPlacement.position.x, vrPlacement.position.y,
+			              vrPlacement.position.z);
+			displace = false;
+		}
+#endif
 	} else {
 		Entity * io = entities[m_caster];
 		m_pos = io->pos + Vec3f(0.f, -20.f, 0.f);
 		beta = io->angle.getYaw();
 	}
-	m_pos += angleToVectorXZ(beta) * 500.f;
+	if(displace) {
+		m_pos += angleToVectorXZ(beta) * 500.f;
+	}
 	
 	GameDuration minDuration = 500ms * m_level;
 	GameDuration maxDuration = 0;
