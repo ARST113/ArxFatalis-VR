@@ -75,10 +75,7 @@ public:
 	VrMotionSampleStatus update(const VrMotionSample & sample,
 	                            const VrStrikeProfile & profile) {
 		if(!isFinite(sample)) {
-			m_count = 0;
-			m_metrics = VrStrikeMetrics{};
-			m_armed = false;
-			m_rearmNotBeforeUs = saturatingAdd(sample.timestampUs, profile.cooldownUs);
+			invalidateTracking(sample.timestampUs, profile);
 			return VrMotionSampleStatus::Invalid;
 		}
 
@@ -110,6 +107,10 @@ public:
 
 		if(!m_armed && sample.timestampUs >= m_rearmNotBeforeUs
 		   && m_metrics.terminalSpeed <= profile.rearmSpeed) {
+			// A low-speed sample after the cooldown is the neutral pose boundary.
+			// Throw away every pre-rearm segment so accumulated motion from the
+			// previous impact cannot contribute to the next strike.
+			restartHistoryAt(sample);
 			m_armed = true;
 		}
 		return VrMotionSampleStatus::Accepted;
@@ -137,9 +138,33 @@ public:
 		return m_armed;
 	}
 
-	void clear() {
+	std::uint64_t rearmNotBeforeUs() const {
+		return m_rearmNotBeforeUs;
+	}
+
+	// Start a new gesture/source without bypassing the cooldown established by
+	// an earlier hit. This is used when a fist closes, a different object is
+	// grabbed, or another semantic impact source takes ownership of the hand.
+	void resetHistory() {
 		m_count = 0;
 		m_metrics = VrStrikeMetrics{};
+	}
+
+	// Lost/non-finite tracking must fail closed even when there is no synthetic
+	// position available to feed through update(). The next strike is allowed
+	// only after the normal cooldown and low-speed rearm path.
+	void invalidateTracking(std::uint64_t timestampUs,
+	                        const VrStrikeProfile & profile) {
+		resetHistory();
+		m_armed = false;
+		m_rearmNotBeforeUs = saturatingAdd(timestampUs, profile.cooldownUs);
+	}
+
+	// Full session reset: appropriate when starting a level/runtime, not for a
+	// gesture boundary. Unlike resetHistory(), this intentionally clears the
+	// cooldown and restores the initially armed state.
+	void clear() {
+		resetHistory();
 		m_armed = true;
 		m_rearmNotBeforeUs = 0;
 	}
@@ -199,11 +224,15 @@ private:
 		m_count -= first;
 	}
 
-	void resetAfterTrackingDiscontinuity(const VrMotionSample & sample,
-	                                     const VrStrikeProfile & profile) {
-		m_count = 0;
+	void restartHistoryAt(const VrMotionSample & sample) {
+		resetHistory();
 		push(sample);
 		m_metrics = calculateMetrics();
+	}
+
+	void resetAfterTrackingDiscontinuity(const VrMotionSample & sample,
+	                                     const VrStrikeProfile & profile) {
+		restartHistoryAt(sample);
 		m_armed = false;
 		m_rearmNotBeforeUs = saturatingAdd(sample.timestampUs, profile.cooldownUs);
 	}
