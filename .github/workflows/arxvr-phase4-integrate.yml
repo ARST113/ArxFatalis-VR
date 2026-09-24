@@ -7,6 +7,7 @@ on:
     paths:
       - 'tools/arxvr_apply_phase4_live_integration_v2.py'
       - 'tools/arxvr_apply_phase4_interaction_service.py'
+      - 'tools/arxvr_apply_phase4_equipped_weapon.py'
       - '.github/workflows/arxvr-phase4-integrate.yml'
 
 permissions:
@@ -27,6 +28,7 @@ jobs:
         run: |
           python3 -m py_compile tools/arxvr_apply_phase4_live_integration_v2.py
           python3 -m py_compile tools/arxvr_apply_phase4_interaction_service.py
+          python3 -m py_compile tools/arxvr_apply_phase4_equipped_weapon.py
 
       - name: Restore pre-integration ArxGame and apply guarded patch
         shell: bash
@@ -52,6 +54,7 @@ jobs:
 
           python3 tools/arxvr_apply_phase4_live_integration_v2.py
           python3 tools/arxvr_apply_phase4_interaction_service.py
+          python3 tools/arxvr_apply_phase4_equipped_weapon.py
 
           # Reconstruct the generated source while retaining the exact original
           # bytes for every unchanged logical line. Only inserted/replaced lines
@@ -113,10 +116,14 @@ jobs:
           set -euxo pipefail
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
           grep -F '#include "vr/VrInteractionSystem.h"' "$SOURCE"
+          grep -F '#include "vr/VrWeaponContact.h"' "$SOURCE"
           grep -F 'VrImpactGateStatus::Qualified' "$SOURCE"
           grep -F 'g_vrInteractions.updateHand(hand, sample)' "$SOURCE"
           grep -F 'g_vrInteractions.consumeImpact(hand, impact)' "$SOURCE"
           grep -F 'arxvr::VrImpactEvent impact;' "$SOURCE"
+          grep -F 'updateVrEquippedWeaponCombat' "$SOURCE"
+          grep -F 'VrImpactSource::EquippedWeapon' "$SOURCE"
+          grep -F 'vrWeaponSegmentIntersectsAabb' "$SOURCE"
           if grep -Fq '#include "vr/VrHandState.h"' "$SOURCE"; then
             echo "Legacy direct VrHandState include found in generated C++" >&2
             exit 1
@@ -163,7 +170,7 @@ jobs:
           test "$DELETED" != "-"
           CHANGED=$((ADDED + DELETED))
           echo "Semantic Phase 4 live integration diff vs ${BASE_COMMIT}: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
-          test "$CHANGED" -le 700
+          test "$CHANGED" -le 900
           git diff --cached "${BASE_COMMIT}" --stat -- "$SOURCE"
           echo "ARXVR_PHASE4_DIRTY=1" >> "$GITHUB_ENV"
 
@@ -174,7 +181,7 @@ jobs:
           set -euxo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Route Phase 4 combat through VR interaction service"
+          git commit -m "Route equipped melee through VR interaction service"
 
       - name: Push generated live integration
         if: env.ARXVR_PHASE4_DIRTY == '1'
