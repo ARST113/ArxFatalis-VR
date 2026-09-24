@@ -46,6 +46,10 @@ struct VrRuneConfig {
 	// Physical half-extents of the virtual drawing plane in Arx world units.
 	float halfWidth = 55.f;
 	float halfHeight = 55.f;
+	// Keep the casting hand inside a finite slab around the locked plane. This
+	// prevents pure depth motion toward/away from the player from collapsing to
+	// an apparently valid 2D rune after orthogonal projection.
+	float maximumPlaneDistance = 35.f;
 	// Reject sub-millimetre/controller jitter before feeding the legacy rune
 	// recogniser. Distances are evaluated in world units on the locked plane.
 	float minimumPointDistance = 1.5f;
@@ -125,6 +129,7 @@ inline bool vrRuneNormalize(const VrRuneVector3 & value, VrRuneVector3 & normali
 inline bool vrRuneConfigValid(const VrRuneConfig & config) {
 	return vrRuneFinite(config.halfWidth) && config.halfWidth > 0.f
 	    && vrRuneFinite(config.halfHeight) && config.halfHeight > 0.f
+	    && vrRuneFinite(config.maximumPlaneDistance) && config.maximumPlaneDistance > 0.f
 	    && vrRuneFinite(config.minimumPointDistance) && config.minimumPointDistance >= 0.f
 	    && vrRuneFinite(config.minimumPathLength) && config.minimumPathLength >= 0.f
 	    && config.minimumPointCount >= 2
@@ -166,6 +171,10 @@ public:
 			if(!lockPlane(plane)) {
 				return VrRuneStatus::InvalidPlane;
 			}
+			if(!sampleWithinPlaneDepth(sample.handPosition)) {
+				cancelCapture();
+				return VrRuneStatus::TrackingReset;
+			}
 
 			m_capturing = true;
 			m_startTimestampUs = sample.timestampUs;
@@ -177,6 +186,10 @@ public:
 		}
 
 		if(!sampleValidForContinuation(sample)) {
+			cancelCapture();
+			return VrRuneStatus::TrackingReset;
+		}
+		if(!sampleWithinPlaneDepth(sample.handPosition)) {
 			cancelCapture();
 			return VrRuneStatus::TrackingReset;
 		}
@@ -240,6 +253,7 @@ private:
 		}
 
 		m_planeOrigin = plane.origin;
+		m_planeNormal = normal;
 		m_planeLocked = true;
 		return true;
 	}
@@ -250,6 +264,14 @@ private:
 			return false;
 		}
 		return sample.timestampUs - m_lastTimestampUs <= m_config.maximumSampleGapUs;
+	}
+
+	bool sampleWithinPlaneDepth(const VrRuneVector3 & world) const {
+		if(!m_planeLocked || !vrRuneFinite(world)) {
+			return false;
+		}
+		const float depth = std::abs(vrRuneDot(vrRuneSubtract(world, m_planeOrigin), m_planeNormal));
+		return vrRuneFinite(depth) && depth <= m_config.maximumPlaneDistance;
 	}
 
 	VrRunePoint2 project(const VrRuneVector3 & world) const {
@@ -279,6 +301,23 @@ private:
 		m_bounds.max.y = std::max(m_bounds.max.y, point.y);
 	}
 
+	void compactRetainedPoints() {
+		if(m_points.size() < 2) {
+			return;
+		}
+
+		// Preserve the complete gesture timespan instead of freezing the retained
+		// vector at the first maximumPointCount samples. Repeated deterministic
+		// decimation keeps the first point and progressively coarser historical
+		// samples; the newest accepted point is then appended by addProjectedPoint.
+		std::vector<VrRunePoint2> compacted;
+		compacted.reserve((m_points.size() + 1u) / 2u);
+		for(std::size_t i = 0; i < m_points.size(); i += 2) {
+			compacted.push_back(m_points[i]);
+		}
+		m_points.swap(compacted);
+	}
+
 	void addProjectedPoint(const VrRuneVector3 & handPosition, bool force) {
 		const VrRunePoint2 point = project(handPosition);
 		if(!vrRuneFinite(point.x) || !vrRuneFinite(point.y)) {
@@ -297,18 +336,16 @@ private:
 		}
 
 		// Keep trajectory metrics tied to the most recent accepted physical
-		// sample even after the retained point buffer reaches capacity. Using the
-		// last stored vector element here would repeatedly measure from one stale
-		// point and inflate pathLength on long strokes.
+		// sample even when retained recognizer points must be compacted.
 		m_lastProjectedPoint = point;
 		m_haveLastProjectedPoint = true;
+		expandBounds(point);
 
-		if(m_points.size() < m_config.maximumPointCount) {
-			m_points.push_back(point);
-			expandBounds(point);
-		} else {
+		if(m_points.size() >= m_config.maximumPointCount) {
 			m_capacityLimited = true;
+			compactRetainedPoints();
 		}
+		m_points.push_back(point);
 	}
 
 	VrRuneStatus finishGesture() {
@@ -333,6 +370,8 @@ private:
 	void cancelCapture() {
 		m_capturing = false;
 		m_planeLocked = false;
+		m_planeOrigin = {};
+		m_planeNormal = { 0.f, 0.f, 1.f };
 		m_haveLastHand = false;
 		m_startTimestampUs = 0;
 		m_lastTimestampUs = 0;
@@ -348,6 +387,7 @@ private:
 	VrRuneConfig m_config{};
 	bool m_planeLocked = false;
 	VrRuneVector3 m_planeOrigin{};
+	VrRuneVector3 m_planeNormal{ 0.f, 0.f, 1.f };
 	VrRuneVector3 m_planeRight{ 1.f, 0.f, 0.f };
 	VrRuneVector3 m_planeUp{ 0.f, 1.f, 0.f };
 
