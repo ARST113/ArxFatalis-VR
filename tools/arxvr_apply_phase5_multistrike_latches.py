@@ -23,6 +23,19 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 def main() -> None:
     text = PATH.read_text(encoding="utf-8")
 
+    # The integration helper can run again after its generated commit lands.
+    # Treat the fully upgraded form as success while still rejecting partial
+    # or ambiguous source states.
+    if "std::array<DefenseLatch, 8> m_latches{};" in text:
+        if "DefenseLatch m_latch{};" in text:
+            raise RuntimeError("mixed single/table defense latch state")
+        if "for(const DefenseLatch & latch : m_latches)" not in text:
+            raise RuntimeError("latch table storage exists without table query")
+        if "DefenseLatch * target = nullptr;" not in text:
+            raise RuntimeError("latch table storage exists without allocator")
+        print("VrDefenseRuntime multi-strike latch table already applied")
+        return
+
     old_query = '''\tbool defenseLatched(std::uint64_t sourceToken,
 \t                    std::uint64_t strikeToken,
 \t                    std::uint64_t timestampUs) const {
