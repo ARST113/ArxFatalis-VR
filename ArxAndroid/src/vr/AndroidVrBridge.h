@@ -52,6 +52,17 @@ struct ArxVrVisualState {
 	ArxVrVisualHandPose rightHand;
 };
 
+constexpr std::uint32_t ARXVR_HAPTIC_REQUEST_VERSION = 1u;
+
+struct ArxVrHapticRequest {
+	std::uint32_t version;
+	std::uint32_t hand;
+	std::uint32_t event;
+	float amplitude;
+	float durationSeconds;
+	float frequencyHz;
+};
+
 enum ArxVrTrackingValidBits : std::uint32_t {
 	ARXVR_VALID_HEAD = 1u << 0,
 	ARXVR_VALID_LEFT_AIM = 1u << 1,
@@ -84,3 +95,9 @@ void arxvr_update_tracking(const ArxVrTrackingState * state);
 
 extern "C" __attribute__((visibility("default")))
 int arxvr_read_tracking(ArxVrTrackingState * state);
+
+// Internal game-side enqueue and exported host-side drain for semantic haptics.
+void arxvrQueueHapticRequest(const ArxVrHapticRequest & request);
+
+extern "C" __attribute__((visibility("default")))
+int arxvr_poll_haptic(ArxVrHapticRequest * request);
