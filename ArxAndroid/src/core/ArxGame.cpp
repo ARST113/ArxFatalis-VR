@@ -920,7 +920,13 @@ static void updateVrPhysicalInteraction() {
 	}
 	const bool secondaryWeaponGripActive = equippedMeleeActive
 	                                    && g_vrWeaponSystem.twoHanded();
-	if(!leftDragging && !secondaryWeaponGripActive) {
+	if(secondaryWeaponGripActive) {
+		// The off hand is owned by the two-hand weapon constraint while latched.
+		// Discard any previously banked fist trajectory without clearing the
+		// hand's cooldown/retraction state, so releasing a brief two-hand grip
+		// cannot resume a stale fist swing in the same physical squeeze.
+		g_vrInteractions.resetGesture(arxvr::VrHand::Left);
+	} else if(!leftDragging) {
 		updateVrFistCombat(false, haveLeftHand, leftHandPosition,
 		                  arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
 		                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
