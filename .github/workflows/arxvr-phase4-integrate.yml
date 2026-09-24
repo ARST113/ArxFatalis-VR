@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'tools/arxvr_apply_phase4_live_integration_v2.py'
+      - 'tools/arxvr_apply_phase4_interaction_service.py'
       - '.github/workflows/arxvr-phase4-integrate.yml'
 
 permissions:
@@ -22,8 +23,10 @@ jobs:
           ref: vr-foundation-phase1
           fetch-depth: 0
 
-      - name: Validate integration generator
-        run: python3 -m py_compile tools/arxvr_apply_phase4_live_integration_v2.py
+      - name: Validate integration generators
+        run: |
+          python3 -m py_compile tools/arxvr_apply_phase4_live_integration_v2.py
+          python3 -m py_compile tools/arxvr_apply_phase4_interaction_service.py
 
       - name: Restore pre-integration ArxGame and apply guarded patch
         shell: bash
@@ -39,7 +42,7 @@ jobs:
           git show "${BASE_COMMIT}:${SOURCE}" > "${BASE_BLOB}"
           cp "${BASE_BLOB}" "${SOURCE}"
 
-          # The deterministic generator intentionally operates on LF text.
+          # The deterministic generators intentionally operate on LF text.
           python3 - <<'PY'
           from pathlib import Path
           path = Path("ArxAndroid/src/core/ArxGame.cpp")
@@ -48,6 +51,7 @@ jobs:
           PY
 
           python3 tools/arxvr_apply_phase4_live_integration_v2.py
+          python3 tools/arxvr_apply_phase4_interaction_service.py
 
           # Reconstruct the generated source while retaining the exact original
           # bytes for every unchanged logical line. Only inserted/replaced lines
@@ -108,9 +112,19 @@ jobs:
         run: |
           set -euxo pipefail
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
-          grep -F '#include "vr/VrHandState.h"' "$SOURCE"
+          grep -F '#include "vr/VrInteractionSystem.h"' "$SOURCE"
           grep -F 'VrImpactGateStatus::Qualified' "$SOURCE"
-          grep -F 'consumeQualifiedImpact' "$SOURCE"
+          grep -F 'g_vrInteractions.updateHand(hand, sample)' "$SOURCE"
+          grep -F 'g_vrInteractions.consumeImpact(hand, impact)' "$SOURCE"
+          grep -F 'arxvr::VrImpactEvent impact;' "$SOURCE"
+          if grep -Fq '#include "vr/VrHandState.h"' "$SOURCE"; then
+            echo "Legacy direct VrHandState include found in generated C++" >&2
+            exit 1
+          fi
+          if grep -Fq 'g_vrRightHandImpact' "$SOURCE" || grep -Fq 'g_vrLeftHandImpact' "$SOURCE"; then
+            echo "Legacy per-hand state global found in generated C++" >&2
+            exit 1
+          fi
           if grep -Fq 'static arxvr::VrHandState g_vrRightHandImpact;\n"' "$SOURCE"; then
             echo "Serialized Python literal found in generated C++" >&2
             exit 1
@@ -153,16 +167,16 @@ jobs:
           git diff --cached "${BASE_COMMIT}" --stat -- "$SOURCE"
           echo "ARXVR_PHASE4_DIRTY=1" >> "$GITHUB_ENV"
 
-      - name: Commit repaired live integration
+      - name: Commit generated live integration
         if: env.ARXVR_PHASE4_DIRTY == '1'
         shell: bash
         run: |
           set -euxo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Repair Phase 4 live combat integration without EOL churn"
+          git commit -m "Route Phase 4 combat through VR interaction service"
 
-      - name: Push repaired live integration
+      - name: Push generated live integration
         if: env.ARXVR_PHASE4_DIRTY == '1'
         shell: bash
         run: |
