@@ -59,6 +59,30 @@ void trackingLossClearsAPreviouslyValidRay() {
 	assert(!service.ray().valid);
 }
 
+void recoversFromTrackingInvalidationWithFreshSample() {
+	arxvr::VrSpellAimService service;
+	arxvr::VrSpellAimSample sample;
+	sample.origin = { 1.f, 2.f, 3.f };
+	sample.forward = { 1.f, 0.f, 0.f };
+	sample.trackingValid = true;
+	assert(service.update(sample).valid);
+
+	sample.trackingValid = false;
+	assert(!service.update(sample).valid);
+
+	sample.origin = { -4.f, 5.f, -6.f };
+	sample.forward = { 0.f, 4.f, 0.f };
+	sample.trackingValid = true;
+	const arxvr::VrSpellAimRay recovered = service.update(sample);
+	assert(recovered.valid);
+	assert(near(recovered.origin.x, -4.f));
+	assert(near(recovered.origin.y, 5.f));
+	assert(near(recovered.origin.z, -6.f));
+	assert(near(recovered.direction.x, 0.f));
+	assert(near(recovered.direction.y, 1.f));
+	assert(near(recovered.direction.z, 0.f));
+}
+
 void rejectsDegenerateAndNonFiniteSamples() {
 	arxvr::VrSpellAimService service;
 	arxvr::VrSpellAimSample sample;
@@ -116,6 +140,7 @@ int main() {
 	normalizesTrackedDirectionWithoutMovingOrigin();
 	acceptsObliqueAndVerticalPhysicalAim();
 	trackingLossClearsAPreviouslyValidRay();
+	recoversFromTrackingInvalidationWithFreshSample();
 	rejectsDegenerateAndNonFiniteSamples();
 	acceptsSmallButUsableDirectionAboveThreshold();
 	explicitClearInvalidatesPublishedAim();
