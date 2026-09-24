@@ -126,9 +126,17 @@ jobs:
           set -euxo pipefail
           BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
-          ! git diff --quiet -- "$SOURCE"
-          git add "$SOURCE"
 
+          # This helper is triggered on PR synchronizations while its workflow
+          # file remains part of the PR diff. Re-generating an already-correct
+          # ArxGame must therefore be a successful no-op, not a red CI check.
+          if git diff --quiet -- "$SOURCE"; then
+            echo "Phase 4 live integration already matches generated output."
+            echo "ARXVR_PHASE4_DIRTY=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          git add "$SOURCE"
           test "$(git diff --cached --name-only | wc -l)" -eq 1
           git diff --cached --name-only | grep -Fx "$SOURCE"
 
@@ -143,8 +151,10 @@ jobs:
           echo "Semantic Phase 4 live integration diff vs ${BASE_COMMIT}: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
           test "$CHANGED" -le 700
           git diff --cached "${BASE_COMMIT}" --stat -- "$SOURCE"
+          echo "ARXVR_PHASE4_DIRTY=1" >> "$GITHUB_ENV"
 
       - name: Commit repaired live integration
+        if: env.ARXVR_PHASE4_DIRTY == '1'
         shell: bash
         run: |
           set -euxo pipefail
@@ -153,6 +163,7 @@ jobs:
           git commit -m "Repair Phase 4 live combat integration without EOL churn"
 
       - name: Push repaired live integration
+        if: env.ARXVR_PHASE4_DIRTY == '1'
         shell: bash
         run: |
           set -euxo pipefail
