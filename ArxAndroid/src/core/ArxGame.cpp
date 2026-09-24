@@ -157,7 +157,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "vr/AndroidVrBridge.h"
 #include "vr/AndroidVrInput.h"
 #include "vr/VrHaptics.h"
-#include "vr/VrHandState.h"
+#include "vr/VrInteractionSystem.h"
 #endif
 #include "platform/Platform.h"
 #include "platform/Process.h"
@@ -527,8 +527,7 @@ static Entity * findVrPhysicalInteractionTarget(const Vec3f & handPosition,
 	return nullptr;
 }
 
-static arxvr::VrHandState g_vrRightHandImpact;
-static arxvr::VrHandState g_vrLeftHandImpact;
+static arxvr::VrInteractionSystem g_vrInteractions;
 
 static std::uint64_t vrImpactTimestampUs() {
 	return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -566,7 +565,7 @@ static Entity * findVrHeldObjectTarget(const Entity & heldObject,
 static void updateVrHeldObjectCombat(bool rightHand, bool haveHand,
                                      const Vec3f & handPosition, bool gripHeld,
                                      bool allowHit, std::uint64_t timestampUs) {
-	arxvr::VrHandState & state = rightHand ? g_vrRightHandImpact : g_vrLeftHandImpact;
+	const arxvr::VrHand hand = rightHand ? arxvr::VrHand::Right : arxvr::VrHand::Left;
 	Entity * heldObject = getVrPhysicalDragEntity();
 
 	arxvr::VrImpactSample sample;
@@ -583,7 +582,7 @@ static void updateVrHeldObjectCombat(bool rightHand, bool haveHand,
 		sample.motion.y = handPosition.y;
 		sample.motion.z = handPosition.z;
 	}
-	const arxvr::VrImpactGateStatus status = state.update(sample);
+	const arxvr::VrImpactGateStatus status = g_vrInteractions.updateHand(hand, sample);
 	if(status != arxvr::VrImpactGateStatus::Qualified || !heldObject
 	   || !gripHeld || !allowHit || !haveHand) {
 		return;
@@ -604,8 +603,8 @@ static void updateVrHeldObjectCombat(bool rightHand, bool haveHand,
 		return;
 	}
 
-	arxvr::VrQualifiedImpact impact;
-	if(!state.consumeQualifiedImpact(impact)) {
+	arxvr::VrImpactEvent impact;
+	if(!g_vrInteractions.consumeImpact(hand, impact)) {
 		return;
 	}
 	const float impactSpeed = std::max(objectSpeed, impact.metrics.terminalSpeed);
@@ -661,7 +660,7 @@ static Entity * findVrFistTarget(const Vec3f & handPosition) {
 static void updateVrFistCombat(bool rightHand, bool haveHand,
                             const Vec3f & handPosition, bool fistClosed,
                             bool allowHit, std::uint64_t timestampUs) {
-	arxvr::VrHandState & state = rightHand ? g_vrRightHandImpact : g_vrLeftHandImpact;
+	const arxvr::VrHand hand = rightHand ? arxvr::VrHand::Right : arxvr::VrHand::Left;
 	arxvr::VrImpactSample sample;
 	sample.motion.timestampUs = timestampUs;
 	sample.source = arxvr::VrImpactSource::Fist;
@@ -673,7 +672,7 @@ static void updateVrFistCombat(bool rightHand, bool haveHand,
 		sample.motion.y = handPosition.y;
 		sample.motion.z = handPosition.z;
 	}
-	const arxvr::VrImpactGateStatus status = state.update(sample);
+	const arxvr::VrImpactGateStatus status = g_vrInteractions.updateHand(hand, sample);
 	if(status != arxvr::VrImpactGateStatus::Qualified
 	   || !haveHand || !allowHit || !fistClosed) {
 		return;
@@ -684,8 +683,8 @@ static void updateVrFistCombat(bool rightHand, bool haveHand,
 		return;
 	}
 
-	arxvr::VrQualifiedImpact impact;
-	if(!state.consumeQualifiedImpact(impact)) {
+	arxvr::VrImpactEvent impact;
+	if(!g_vrInteractions.consumeImpact(hand, impact)) {
 		return;
 	}
 	const float speed = impact.metrics.terminalSpeed;
@@ -723,8 +722,7 @@ static void updateVrPhysicalInteraction() {
 	}
 
 	if(!g_haveVrCenterCamera || ARXmenu.mode() != Mode_InGame) {
-		g_vrRightHandImpact.resetSession();
-		g_vrLeftHandImpact.resetSession();
+		g_vrInteractions.resetSession();
 		g_vrInteractionTarget = EntityHandle();
 		arxvrSetDirectInteractionTriggerCaptured(false);
 		return;
