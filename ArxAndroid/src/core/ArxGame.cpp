@@ -48,6 +48,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <cstring>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <limits>
 #include <sstream>
 #include <string_view>
@@ -155,6 +156,14 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #if defined(ARXVR_ANDROID_BUILD)
 #include "vr/AndroidVrBridge.h"
 #include "vr/AndroidVrInput.h"
+#include "vr/VrDefenseRuntime.h"
+#include "vr/VrHaptics.h"
+#include "vr/VrInteractionSystem.h"
+#include "vr/VrRuneRuntime.h"
+#include "vr/VrSpellAim.h"
+#include "game/magic/SpellRecognition.h"
+#include "vr/VrWeaponContact.h"
+#include "vr/VrWeaponSystem.h"
 #endif
 #include "platform/Platform.h"
 #include "platform/Process.h"
@@ -202,6 +211,54 @@ static const PlatformDuration runeDrawPointInterval = 16ms; // ~60fps
 #if defined(ARXVR_ANDROID_BUILD)
 static Camera g_vrCenterCamera;
 static bool g_haveVrCenterCamera = false;
+static arxvr::VrRuneRuntime g_vrRuneRuntime;
+static bool g_vrRuneFeedbackPending = false;
+static std::array<Rune, MAX_SPELL_SYMBOLS> g_vrRuneSymbolsBefore{};
+static size_t g_vrRuneFeedbackPointCount = 0;
+static float g_vrRuneFeedbackPathLength = 0.f;
+static std::uint64_t g_vrRuneFeedbackDurationUs = 0;
+
+static arxvr::VrRuneVector3 vrRuneVector(const Vec3f & value) {
+	return { value.x, value.y, value.z };
+}
+
+static arxvr::VrRunePlane vrRuneDrawingPlane() {
+	arxvr::VrRunePlane plane;
+	if(!g_haveVrCenterCamera) {
+		return plane;
+	}
+
+	Vec3f forward = angleToVector(g_vrCenterCamera.angle);
+	if(glm::length(forward) <= 0.001f) {
+		return plane;
+	}
+	forward = glm::normalize(forward);
+	// Arx world +Y points down. Using world-up and a normal facing the player
+	// makes cross(up, normal) point toward physical controller-right at the
+	// neutral camera pose. VrRuneSystem locks this basis on paint-down.
+	const Vec3f worldUp(0.f, -1.f, 0.f);
+	plane.origin = vrRuneVector(g_vrCenterCamera.m_pos + forward * 70.f);
+	plane.normal = vrRuneVector(-forward);
+	plane.up = vrRuneVector(worldUp);
+	plane.valid = true;
+	return plane;
+}
+
+static std::uint64_t vrRuneTimestampUs() {
+	const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+	const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+	return micros > 0 ? static_cast<std::uint64_t>(micros) : 1u;
+}
+
+static bool vrRuneScreenPoint(const arxvr::VrRunePoint2 & point, Vec2s & screenPoint) {
+	const arxvr::VrRuneViewportPoint mapped = g_vrRuneRuntime.mapToViewport(
+		point, g_size.width(), g_size.height());
+	if(!mapped.valid) {
+		return false;
+	}
+	screenPoint = Vec2s(Vec2f(mapped.x, mapped.y));
+	return true;
+}
 
 enum class VrTraversalPhase {
 	Inactive,
@@ -400,7 +457,6 @@ constexpr float kVrAssistedGrabDistance = 190.f;
 constexpr float kVrAimAssistRadius = 45.f;
 constexpr float kVrPhysicalLeverRadius = 125.f;
 constexpr float kVrFistContactRadius = 34.f;
-constexpr float kVrFistMinimumSpeed = 85.f;
 EntityHandle g_vrInteractionTarget;
 static bool g_vrPhysicalDragUsesRightHand = true;
 
@@ -525,21 +581,32 @@ static Entity * findVrPhysicalInteractionTarget(const Vec3f & handPosition,
 	return nullptr;
 }
 
-struct VrFistState {
-	Vec3f previousPosition = Vec3f(0.f);
-	bool havePreviousPosition = false;
-	PlatformInstant lastHit = 0;
-};
+static arxvr::VrInteractionSystem g_vrInteractions;
+static arxvr::VrWeaponSystem g_vrWeaponSystem;
 
-static VrFistState g_vrRightFist;
-static VrFistState g_vrLeftFist;
+static std::uint64_t vrImpactTimestampUs() {
+	return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
-struct VrHeldObjectCombatState {
-	EntityHandle weapon;
-	PlatformInstant lastHit = 0;
-};
+static arxvr::VrWeaponClass vrWeaponClassForArx(WeaponType type) {
+	switch(type) {
+		case WEAPON_DAGGER: return arxvr::VrWeaponClass::Dagger;
+		case WEAPON_1H: return arxvr::VrWeaponClass::OneHanded;
+		case WEAPON_2H: return arxvr::VrWeaponClass::TwoHanded;
+		case WEAPON_BOW: return arxvr::VrWeaponClass::Bow;
+		case WEAPON_BARE: return arxvr::VrWeaponClass::Unknown;
+	}
+	return arxvr::VrWeaponClass::Unknown;
+}
 
-static VrHeldObjectCombatState g_vrHeldObjectCombat;
+static arxvr::VrImpactVector3 vrImpactVector(const Vec3f & value) {
+	return { value.x, value.y, value.z };
+}
+
+static Vec3f vrArxVector(const arxvr::VrImpactVector3 & value) {
+	return Vec3f(value.x, value.y, value.z);
+}
 
 static float distanceBetweenVrBounds(const EERIE_3D_BBOX & a,
                                      const EERIE_3D_BBOX & b) {
@@ -569,25 +636,34 @@ static Entity * findVrHeldObjectTarget(const Entity & heldObject,
 	return nearest;
 }
 
-static void updateVrHeldObjectCombat(bool gripHeld) {
+static void updateVrHeldObjectCombat(bool rightHand, bool haveHand,
+                                     const Vec3f & handPosition, bool gripHeld,
+                                     bool allowHit, std::uint64_t timestampUs) {
+	const arxvr::VrHand hand = rightHand ? arxvr::VrHand::Right : arxvr::VrHand::Left;
 	Entity * heldObject = getVrPhysicalDragEntity();
-	if(!heldObject || !gripHeld) {
-		return;
+
+	arxvr::VrImpactSample sample;
+	sample.motion.timestampUs = timestampUs;
+	sample.source = heldObject ? arxvr::VrImpactSource::HeldObject
+	                           : arxvr::VrImpactSource::None;
+	sample.sourceToken = heldObject
+	                   ? static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(heldObject))
+	                   : 0;
+	sample.gestureActive = heldObject && gripHeld && allowHit;
+	sample.trackingValid = haveHand;
+	if(haveHand) {
+		sample.motion.x = handPosition.x;
+		sample.motion.y = handPosition.y;
+		sample.motion.z = handPosition.z;
 	}
-	if(g_vrHeldObjectCombat.weapon != heldObject->index()) {
-		g_vrHeldObjectCombat.weapon = heldObject->index();
-		g_vrHeldObjectCombat.lastHit = 0;
+	const arxvr::VrImpactGateStatus status = g_vrInteractions.updateHand(hand, sample);
+	if(status != arxvr::VrImpactGateStatus::Qualified || !heldObject
+	   || !gripHeld || !allowHit || !haveHand) {
+		return;
 	}
 
 	const Vec3f velocity = getVrPhysicalDragVelocity();
-	const float speed = glm::length(velocity);
-	if(speed < 75.f) {
-		return;
-	}
-	const PlatformInstant now = g_platformTime.frameStart();
-	if(now - g_vrHeldObjectCombat.lastHit < 300ms) {
-		return;
-	}
+	const float objectSpeed = glm::length(velocity);
 	EERIE_3D_BBOX sweptBounds = heldObject->bbox3D;
 	if(sweptBounds.valid()) {
 		const float frameSeconds = std::max(1.f, toMsf(g_platformTime.lastFrameDuration()))
@@ -601,11 +677,16 @@ static void updateVrHeldObjectCombat(bool gripHeld) {
 		return;
 	}
 
+	arxvr::VrImpactEvent impact;
+	if(!g_vrInteractions.consumeImpact(hand, impact)) {
+		return;
+	}
+	const float impactSpeed = std::max(objectSpeed, impact.metrics.terminalSpeed);
 	const Vec3f objectSize = heldObject->bbox3D.valid()
 	                       ? heldObject->bbox3D.max - heldObject->bbox3D.min
 	                       : Vec3f(30.f);
 	const float sizeBonus = glm::clamp(glm::length(objectSize) * 0.015f, 0.f, 5.f);
-	const float impactDamage = glm::clamp(2.f + speed * 0.03f + sizeBonus, 3.f, 18.f);
+	const float impactDamage = glm::clamp(2.f + impactSpeed * 0.03f + sizeBonus, 3.f, 18.f);
 	const Vec3f objectCenter = sweptBounds.valid()
 	                         ? (sweptBounds.min + sweptBounds.max) * 0.5f
 	                         : heldObject->pos;
@@ -620,12 +701,143 @@ static void updateVrHeldObjectCombat(bool gripHeld) {
 	                                      : std::string_view("wood");
 	ARX_SOUND_PlayCollision("flesh", impactMaterial, 1.f, 1.f,
 	                        hitPosition, entities.player());
-	g_vrHeldObjectCombat.lastHit = now;
+	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
+	                VrHapticEvent::ImpactHeavy,
+	                glm::clamp(impactSpeed / 300.f, 0.45f, 1.f));
 	++g_vrHeldObjectHitCount;
 	ARX_PLAYER_Remove_Invisibility();
 	LogInfo << "ArxVR held-object hit: weapon=" << heldObject->idString()
-	        << " target=" << target->idString() << " speed=" << speed
+	        << " target=" << target->idString() << " speed=" << impactSpeed
+	        << " peak=" << impact.metrics.peakSpeed
+	        << " path=" << impact.metrics.pathLength
+	        << " consistency=" << impact.metrics.directionalConsistency
 	        << " damage=" << damage << " life=" << target->_npcdata->lifePool.current;
+}
+
+static Entity * findVrEquippedWeaponTarget(const arxvr::VrWeaponSegment & segment,
+                                             Vec3f & hitPosition,
+                                             float & contactT) {
+	Entity * nearest = nullptr;
+	float nearestT = 2.f;
+	for(Entity & entity : entities.inScene()) {
+		if(!isVrInteractionCandidate(entity) || !(entity.ioflags & IO_NPC)
+		   || !entity._npcdata || entity._npcdata->lifePool.current <= 0.f
+		   || !entity.bbox3D.valid()) {
+			continue;
+		}
+
+		float entryT = 0.f;
+		if(!arxvr::vrWeaponSegmentIntersectsAabb(
+		       segment, vrImpactVector(entity.bbox3D.min),
+		       vrImpactVector(entity.bbox3D.max), entryT)
+		   || entryT >= nearestT) {
+			continue;
+		}
+
+		nearestT = entryT;
+		nearest = &entity;
+		const Vec3f contact = vrArxVector(arxvr::vrWeaponSegmentPoint(segment, entryT));
+		hitPosition = glm::clamp(contact, entity.bbox3D.min, entity.bbox3D.max);
+	}
+
+	contactT = nearest ? nearestT : 0.f;
+	return nearest;
+}
+
+static void updateVrEquippedWeaponCombat(bool rightHand, bool haveHand,
+                                         const Vec3f & handPosition,
+                                         const Vec3f & handDirection,
+                                         const Vec3f & handUp,
+                                         bool haveSecondaryHand,
+                                         const Vec3f & secondaryHandPosition,
+                                         bool secondaryGripPressed,
+                                         Entity & weapon,
+                                         const arxvr::VrWeaponProfile & profile,
+                                         bool allowHit, std::uint64_t timestampUs) {
+	const arxvr::VrHand hand = rightHand ? arxvr::VrHand::Right : arxvr::VrHand::Left;
+
+	arxvr::VrWeaponTrackingSample tracking;
+	tracking.weaponToken = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&weapon));
+	tracking.primaryPosition = vrImpactVector(handPosition);
+	tracking.primaryForward = vrImpactVector(handDirection);
+	tracking.primaryUp = vrImpactVector(handUp);
+	tracking.primaryValid = haveHand;
+	tracking.secondaryPosition = vrImpactVector(secondaryHandPosition);
+	tracking.secondaryValid = haveSecondaryHand;
+	tracking.secondaryGripPressed = secondaryGripPressed;
+
+	const arxvr::VrWeaponPose weaponPose = g_vrWeaponSystem.update(profile, tracking);
+	const arxvr::VrWeaponSegment segment =
+		g_vrWeaponSystem.buildContactSegment(profile, weaponPose);
+
+	// Keep the physical player weapon available to the incoming-melee
+	// defense adapter even when this frame is not itself an outgoing hit.
+	if(segment.valid && weaponPose.valid && allowHit) {
+		arxvr::vrDefenseRuntime().publishDefenderWeapon(
+			tracking.weaponToken, segment, timestampUs);
+	} else {
+		arxvr::vrDefenseRuntime().clearDefenderWeapon();
+	}
+
+	arxvr::VrImpactSample sample;
+	sample.motion.timestampUs = timestampUs;
+	if(segment.valid) {
+		sample.motion.x = segment.end.x;
+		sample.motion.y = segment.end.y;
+		sample.motion.z = segment.end.z;
+	}
+	sample.source = arxvr::VrImpactSource::EquippedWeapon;
+	sample.sourceToken = tracking.weaponToken;
+	sample.profileOverride = profile.strike;
+	sample.effectiveMass = profile.effectiveMass;
+	sample.gestureActive = weaponPose.valid && segment.valid && allowHit;
+	sample.trackingValid = weaponPose.valid && segment.valid;
+	sample.useProfileOverride = true;
+
+	const arxvr::VrImpactGateStatus status = g_vrInteractions.updateHand(hand, sample);
+	if(status != arxvr::VrImpactGateStatus::Qualified || !sample.gestureActive) {
+		return;
+	}
+
+	Vec3f hitPosition(0.f);
+	float contactT = 0.f;
+	Entity * target = findVrEquippedWeaponTarget(segment, hitPosition, contactT);
+	if(!target) {
+		return;
+	}
+
+	arxvr::VrImpactEvent impact;
+	if(!g_vrInteractions.consumeImpact(hand, impact)) {
+		return;
+	}
+	impact.attackerToken = static_cast<std::uint64_t>(
+		reinterpret_cast<std::uintptr_t>(entities.player()));
+	impact.targetToken = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(target));
+
+	const float impactSpeed = std::max(impact.metrics.terminalSpeed,
+	                                   impact.metrics.averageSpeed);
+	const float speedScale = glm::clamp(
+		impactSpeed / std::max(profile.strike.minPeakSpeed * 2.f, 1.f), 0.25f, 1.f);
+	const float massScale = glm::clamp(std::sqrt(impact.effectiveMass), 0.75f, 1.35f);
+	const float tipBlend = glm::clamp((contactT - 0.45f) / 0.55f, 0.f, 1.f);
+	const float tipScale = glm::mix(1.f, profile.tipDamageMultiplier, tipBlend);
+	const float strength = glm::clamp(speedScale * massScale * tipScale, 0.25f, 1.f);
+
+	const float damage = ARX_EQUIPMENT_ComputeDamages(
+		entities.player(), target, strength, &hitPosition);
+	ARX_DAMAGES_DurabilityCheck(&weapon, g_framedelay * 0.006f);
+	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
+	                VrHapticEvent::ImpactHeavy,
+	                glm::clamp(strength, 0.45f, 1.f));
+	ARX_PLAYER_Remove_Invisibility();
+	LogInfo << "ArxVR equipped-weapon hit: weapon=" << weapon.idString()
+	        << " target=" << target->idString() << " speed=" << impactSpeed
+	        << " mass=" << impact.effectiveMass << " contactT=" << contactT
+	        << " twoHanded=" << weaponPose.twoHanded
+	        << " path=" << impact.metrics.pathLength
+	        << " consistency=" << impact.metrics.directionalConsistency
+	        << " strength=" << strength << " damage=" << damage
+	        << " life=" << target->_npcdata->lifePool.current;
 }
 
 static Entity * findVrFistTarget(const Vec3f & handPosition) {
@@ -646,37 +858,36 @@ static Entity * findVrFistTarget(const Vec3f & handPosition) {
 }
 
 static void updateVrFistCombat(bool rightHand, bool haveHand,
-	                            const Vec3f & handPosition, bool fistClosed,
-	                            bool allowHit) {
-	VrFistState & state = rightHand ? g_vrRightFist : g_vrLeftFist;
-	if(!haveHand) {
-		state.havePreviousPosition = false;
+                            const Vec3f & handPosition, bool fistClosed,
+                            bool allowHit, std::uint64_t timestampUs) {
+	const arxvr::VrHand hand = rightHand ? arxvr::VrHand::Right : arxvr::VrHand::Left;
+	arxvr::VrImpactSample sample;
+	sample.motion.timestampUs = timestampUs;
+	sample.source = arxvr::VrImpactSource::Fist;
+	sample.sourceToken = 0;
+	sample.gestureActive = haveHand && allowHit && fistClosed;
+	sample.trackingValid = haveHand;
+	if(haveHand) {
+		sample.motion.x = handPosition.x;
+		sample.motion.y = handPosition.y;
+		sample.motion.z = handPosition.z;
+	}
+	const arxvr::VrImpactGateStatus status = g_vrInteractions.updateHand(hand, sample);
+	if(status != arxvr::VrImpactGateStatus::Qualified
+	   || !haveHand || !allowHit || !fistClosed) {
 		return;
 	}
 
-	if(!state.havePreviousPosition) {
-		state.previousPosition = handPosition;
-		state.havePreviousPosition = true;
-		return;
-	}
-
-	const float frameMs = std::max(1.f, toMsf(g_platformTime.lastFrameDuration()));
-	const float speed = glm::distance(handPosition, state.previousPosition)
-	                  * (1000.f / frameMs);
-	state.previousPosition = handPosition;
-	if(!allowHit || !fistClosed || speed < kVrFistMinimumSpeed) {
-		return;
-	}
-
-	const PlatformInstant now = g_platformTime.frameStart();
-	if(now - state.lastHit < 350ms) {
-		return;
-	}
 	Entity * target = findVrFistTarget(handPosition);
 	if(!target) {
 		return;
 	}
 
+	arxvr::VrImpactEvent impact;
+	if(!g_vrInteractions.consumeImpact(hand, impact)) {
+		return;
+	}
+	const float speed = impact.metrics.terminalSpeed;
 	const float strength = glm::clamp((speed - 55.f) / 170.f, 0.35f, 1.f);
 	Vec3f hitPosition = handPosition;
 	float damage = ARX_EQUIPMENT_ComputeDamages(entities.player(), target,
@@ -688,10 +899,15 @@ static void updateVrFistCombat(bool rightHand, bool haveHand,
 		damage = damageNpc(*target, minimumDamage, entities.player(), nullptr,
 		                   DAMAGE_TYPE_GENERIC, &hitPosition);
 	}
-	state.lastHit = now;
+	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
+	                VrHapticEvent::ImpactLight,
+	                glm::clamp(speed / 240.f, 0.35f, 1.f));
 	ARX_PLAYER_Remove_Invisibility();
 	LogInfo << "ArxVR fist hit: hand=" << (rightHand ? "right" : "left")
 	        << " target=" << target->idString() << " speed=" << speed
+	        << " peak=" << impact.metrics.peakSpeed
+	        << " path=" << impact.metrics.pathLength
+	        << " consistency=" << impact.metrics.directionalConsistency
 	        << " strength=" << strength << " damage=" << damage
 	        << " life=" << target->_npcdata->lifePool.current;
 }
@@ -706,15 +922,18 @@ static void updateVrPhysicalInteraction() {
 	}
 
 	if(!g_haveVrCenterCamera || ARXmenu.mode() != Mode_InGame) {
+		g_vrInteractions.resetSession();
+		g_vrWeaponSystem.reset();
+		arxvr::vrDefenseRuntime().resetSession();
 		g_vrInteractionTarget = EntityHandle();
 		arxvrSetDirectInteractionTriggerCaptured(false);
 		return;
 	}
 
-	Vec3f rightHandPosition;
-	Vec3f rightHandDirection;
-	Vec3f leftHandPosition;
-	Vec3f leftHandDirection;
+	Vec3f rightHandPosition(0.f);
+	Vec3f rightHandDirection(0.f);
+	Vec3f leftHandPosition(0.f);
+	Vec3f leftHandDirection(0.f);
 	glm::quat rightHandOrientation(1.f, 0.f, 0.f, 0.f);
 	glm::quat leftHandOrientation(1.f, 0.f, 0.f, 0.f);
 	const bool haveRightHand = arxvrGetHandWorldPose(true, g_vrCenterCamera,
@@ -727,18 +946,71 @@ static void updateVrPhysicalInteraction() {
 	                                               leftHandPosition,
 	                                               leftHandDirection,
 	                                               leftHandOrientation);
-	if(!haveRightHand && !haveLeftHand) {
-		g_vrInteractionTarget = EntityHandle();
-		return;
+	const std::uint64_t impactTimestampUs = vrImpactTimestampUs();
+	const bool physicalDragActive = isVrPhysicalDragActive();
+	const bool rightDragging = physicalDragActive && g_vrPhysicalDragUsesRightHand;
+	const bool leftDragging = physicalDragActive && !g_vrPhysicalDragUsesRightHand;
+
+	// Publish the actual off-hand controller pose only while a shield is
+	// equipped and the hand is available for defense. The runtime applies a
+	// short freshness window, so tracking loss fails closed without leaving
+	// a frozen shield collider active in front of the player.
+	Entity * equippedShield = entities.get(player.equiped[EQUIP_SLOT_SHIELD]);
+	if(equippedShield && haveLeftHand && !leftDragging && !BLOCK_PLAYER_CONTROLS) {
+		arxvr::VrShieldPose shieldPose;
+		shieldPose.center = vrImpactVector(leftHandPosition);
+		shieldPose.normal = vrImpactVector(leftHandDirection);
+		shieldPose.up = vrImpactVector(leftHandOrientation * Vec3f(0.f, 1.f, 0.f));
+		shieldPose.valid = true;
+		arxvr::vrDefenseRuntime().publishShield(
+			static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(equippedShield)),
+			arxvr::VrShieldProfile{}, shieldPose, impactTimestampUs);
+	} else {
+		arxvr::vrDefenseRuntime().clearShield();
 	}
 
-	const bool physicalDragActive = isVrPhysicalDragActive();
-	updateVrFistCombat(true, haveRightHand, rightHandPosition,
-	                  arxvrButtonPressed(ARXVR_BUTTON_RIGHT_SQUEEZE),
-	                  !physicalDragActive && !BLOCK_PLAYER_CONTROLS);
-	updateVrFistCombat(false, haveLeftHand, leftHandPosition,
-	                  arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
-	                  !physicalDragActive && !BLOCK_PLAYER_CONTROLS);
+	// Each physical hand owns exactly one semantic impact source per frame.
+	// An equipped melee weapon takes ownership of the dominant (right) hand
+	// while it is readied in combat mode; physical drag still has priority.
+	Entity * equippedWeapon = entities.get(player.equiped[EQUIP_SLOT_WEAPON]);
+	const arxvr::VrWeaponProfile equippedProfile = arxvr::vrDefaultWeaponProfile(
+		vrWeaponClassForArx(ARX_EQUIPMENT_GetPlayerWeaponType()));
+	const bool equippedMeleeActive = equippedWeapon && equippedProfile.physicalMelee
+	                              && (player.Interface & INTER_COMBATMODE);
+	if(!equippedMeleeActive || rightDragging) {
+		g_vrWeaponSystem.reset();
+	}
+	if(!rightDragging) {
+		if(equippedMeleeActive) {
+			const Vec3f rightHandUp = haveRightHand
+			                        ? rightHandOrientation * Vec3f(0.f, 1.f, 0.f)
+			                        : Vec3f(0.f, 1.f, 0.f);
+			const bool secondaryAvailable = haveLeftHand && !leftDragging;
+			updateVrEquippedWeaponCombat(
+				true, haveRightHand, rightHandPosition, rightHandDirection, rightHandUp,
+				secondaryAvailable, leftHandPosition,
+				secondaryAvailable && arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
+				*equippedWeapon, equippedProfile, !BLOCK_PLAYER_CONTROLS,
+				impactTimestampUs);
+		} else {
+			updateVrFistCombat(true, haveRightHand, rightHandPosition,
+			                  arxvrButtonPressed(ARXVR_BUTTON_RIGHT_SQUEEZE),
+			                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
+		}
+	}
+	const bool secondaryWeaponGripActive = equippedMeleeActive
+	                                    && g_vrWeaponSystem.twoHanded();
+	if(secondaryWeaponGripActive) {
+		// The off hand is owned by the two-hand weapon constraint while latched.
+		// Discard any previously banked fist trajectory without clearing the
+		// hand's cooldown/retraction state, so releasing a brief two-hand grip
+		// cannot resume a stale fist swing in the same physical squeeze.
+		g_vrInteractions.resetGesture(arxvr::VrHand::Left);
+	} else if(!leftDragging) {
+		updateVrFistCombat(false, haveLeftHand, leftHandPosition,
+		                  arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
+		                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
+	}
 
 	if(physicalDragActive) {
 		const bool haveDragHand = g_vrPhysicalDragUsesRightHand ? haveRightHand : haveLeftHand;
@@ -751,15 +1023,22 @@ static void updateVrPhysicalInteraction() {
 		const std::uint32_t gripButton = g_vrPhysicalDragUsesRightHand
 		                               ? ARXVR_BUTTON_RIGHT_SQUEEZE
 		                               : ARXVR_BUTTON_LEFT_SQUEEZE;
+		const bool gripHeld = arxvrButtonPressed(gripButton);
 		// A temporarily lost controller pose must not feed uninitialised
-		// coordinates into the held object. Freeze it for that frame and resume
-		// the same grab when tracking returns.
+		// coordinates into the held object. Freeze it for that frame, while
+		// explicitly failing the impact gate closed until tracking recovers.
 		if(haveDragHand) {
-			const bool gripHeld = arxvrButtonPressed(gripButton);
 			updateVrPhysicalDragPose(dragPosition, dragDirection, dragOrientation,
 			                         gripHeld);
-			updateVrHeldObjectCombat(gripHeld && !BLOCK_PLAYER_CONTROLS);
 		}
+		updateVrHeldObjectCombat(g_vrPhysicalDragUsesRightHand, haveDragHand,
+		                         dragPosition, gripHeld, !BLOCK_PLAYER_CONTROLS,
+		                         impactTimestampUs);
+		return;
+	}
+
+	if(!haveRightHand && !haveLeftHand) {
+		g_vrInteractionTarget = EntityHandle();
 		return;
 	}
 
@@ -878,6 +1157,8 @@ static void updateVrPhysicalInteraction() {
 		LogInfo << "ArxVR physical lever pull: hand="
 		        << (useRightHand ? "right" : "left") << " target="
 		        << target->idString() << " scriptResult=" << result;
+		arxvrEmitHaptic(useRightHand ? VrHapticHand::Right : VrHapticHand::Left,
+		                VrHapticEvent::Lever);
 		ARX_PLAYER_Remove_Invisibility();
 		return;
 	}
@@ -2311,6 +2592,13 @@ bool ArxGame::initGame()
 	ARX_PARTICLES_ClearAll();
 	ParticleSparkClear();
 	ARX_MAGICAL_FLARES_FirstInit();
+#if defined(ARXVR_ANDROID_BUILD)
+	g_vrRuneRuntime.reset();
+	g_vrRuneFeedbackPending = false;
+	g_vrRuneFeedbackPointCount = 0;
+	g_vrRuneFeedbackPathLength = 0.f;
+	g_vrRuneFeedbackDurationUs = 0;
+#endif
 	
 	LastLoadedScene.clear();
 	
@@ -3371,14 +3659,77 @@ void ArxGame::updateLevel() {
 
 	TreatBackgroundActions();
 
+	// Keep directional spell launches frame-local. Tracking loss or a
+	// paralysed player must never leave a stale controller ray available.
+	arxvr::vrSpellAimService().clear();
+
 	// Checks Magic Flares Drawing
 	if(!player.m_paralysed) {
 		bool runeDrawPressed = eeMousePressed1();
 #if defined(ARXVR_ANDROID_BUILD)
-		Vec2s vrRunePoint;
-		if(arxvrGetRuneScreenPoint(g_size, vrRunePoint)) {
-			DANAEMouse = vrRunePoint;
-			runeDrawPressed = true;
+		Vec3f vrRuneHandPosition(0.f);
+		Vec3f vrRuneHandDirection(0.f);
+		glm::quat vrRuneHandOrientation(1.f, 0.f, 0.f, 0.f);
+		const bool vrRuneTracking = g_haveVrCenterCamera
+		                         && arxvrGetRightHandWorldPose(
+			                         g_vrCenterCamera, player.angle.getYaw(),
+			                         vrRuneHandPosition, vrRuneHandDirection,
+			                         vrRuneHandOrientation);
+		arxvr::VrSpellAimSample vrSpellAimSample;
+		vrSpellAimSample.origin = {
+			vrRuneHandPosition.x, vrRuneHandPosition.y, vrRuneHandPosition.z
+		};
+		vrSpellAimSample.forward = {
+			vrRuneHandDirection.x, vrRuneHandDirection.y, vrRuneHandDirection.z
+		};
+		vrSpellAimSample.trackingValid = vrRuneTracking;
+		arxvr::vrSpellAimService().update(vrSpellAimSample);
+		(void)vrRuneHandOrientation;
+
+		arxvr::VrRuneSample vrRuneSample;
+		vrRuneSample.timestampUs = vrRuneTimestampUs();
+		vrRuneSample.handPosition = vrRuneVector(vrRuneHandPosition);
+		vrRuneSample.trackingValid = vrRuneTracking;
+		vrRuneSample.paintPressed = arxvrIsRuneDrawing();
+		const arxvr::VrRuneRuntimeResult vrRune = g_vrRuneRuntime.update(
+			vrRuneSample, vrRuneDrawingPlane());
+
+		// The legacy flare renderer still consumes DANAEMouse, but the point now
+		// comes from the paint-down-locked physical plane rather than an HMD-
+		// relative projection. Repeated filtered points simply leave it stable.
+		if(vrRune.livePointValid) {
+			Vec2s vrRunePoint;
+			if(vrRuneScreenPoint(vrRune.livePoint, vrRunePoint)) {
+				DANAEMouse = vrRunePoint;
+			}
+		}
+		runeDrawPressed = runeDrawPressed
+		               || vrRune.status == arxvr::VrRuneStatus::Capturing;
+
+		if(vrRune.strokeEnded) {
+			// Discard all frame-rate-dependent intermediate points. A qualified
+			// physical gesture is replayed from VrRuneSystem's filtered path so the
+			// existing Arx recognizer, spell prerequisites and scripts stay intact.
+			spellRecognitionPointsReset();
+			if(vrRune.gestureReady) {
+				for(const arxvr::VrRunePoint2 & point : vrRune.gesture.points) {
+					Vec2s mapped;
+					if(vrRuneScreenPoint(point, mapped)) {
+						ARX_SPELLS_AddPoint(mapped);
+					}
+				}
+			}
+
+			if(!vrRune.cancelled) {
+				g_vrRuneSymbolsBefore = SpellSymbol;
+				g_vrRuneFeedbackPending = true;
+				g_vrRuneFeedbackPointCount = vrRune.gestureReady
+				                               ? vrRune.gesture.points.size() : 0;
+				g_vrRuneFeedbackPathLength = vrRune.gestureReady
+				                               ? vrRune.gesture.pathLength : 0.f;
+				g_vrRuneFeedbackDurationUs = vrRune.gestureReady
+				                              ? vrRune.gesture.durationUs : 0;
+			}
 		}
 #endif
 		if(runeDrawPressed) {
@@ -3409,6 +3760,20 @@ void ArxGame::updateLevel() {
 	
 	if(ARXmenu.mode() == Mode_InGame) {
 		ARX_SPELLS_ManageMagic();
+#if defined(ARXVR_ANDROID_BUILD)
+		if(g_vrRuneFeedbackPending) {
+			const bool accepted = SpellSymbol != g_vrRuneSymbolsBefore;
+			arxvrEmitHaptic(VrHapticHand::Right,
+			                 accepted ? VrHapticEvent::RuneAccepted
+			                          : VrHapticEvent::RuneRejected,
+			                 accepted ? 0.75f : 0.45f);
+			LogInfo << "ArxVR rune: accepted=" << accepted
+			        << " points=" << g_vrRuneFeedbackPointCount
+			        << " path=" << g_vrRuneFeedbackPathLength
+			        << " durationUs=" << g_vrRuneFeedbackDurationUs;
+			g_vrRuneFeedbackPending = false;
+		}
+#endif
 	}
 	
 	ARX_SPELLS_UpdateSymbolDraw();

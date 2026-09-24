@@ -42,6 +42,7 @@ private:
     bool ensureArxRenderTarget(int width, int height);
     bool ensureArxPanelRenderer();
     bool renderArxToCurrentEye(const XrPosef& pose, int32_t eye, const glm::mat4& project, const glm::mat4& view);
+    void drainArxHaptics();
     void renderArxTexture(const XrPosef& pose, int32_t eye, const glm::mat4& project,
                           const glm::mat4& view, bool immersive);
     bool captureArxEye(int32_t eye, const GLint viewport[4]);
@@ -103,6 +104,7 @@ private:
     using ArxEngineVrRenderStateFn = unsigned (*)();
     using ArxEngineGetVisualStateFn = int (*)(int eye, ArxVrVisualState* state);
     using ArxEngineRecenter2dFn = void (*)();
+    using ArxEnginePollHapticFn = int (*)(ArxVrHapticRequest* request);
     using ArxEngineStopFn = void (*)();
     void* mArxLibrary = nullptr;
     ArxEngineStartFn mArxEngineStart = nullptr;
@@ -112,6 +114,7 @@ private:
     ArxEngineVrRenderStateFn mArxEngineVrRenderState = nullptr;
     ArxEngineGetVisualStateFn mArxEngineGetVisualState = nullptr;
     ArxEngineRecenter2dFn mArxEngineRecenter2d = nullptr;
+    ArxEnginePollHapticFn mArxEnginePollHaptic = nullptr;
     ArxEngineStopFn mArxEngineStop = nullptr;
     GLuint mArxFramebuffer = 0;
     GLuint mArxColorTexture = 0;
@@ -230,10 +233,13 @@ bool Application::resolveArxEngine() {
         dlsym(mArxLibrary, "arxvr_engine_get_visual_state"));
     mArxEngineRecenter2d = reinterpret_cast<ArxEngineRecenter2dFn>(
         dlsym(mArxLibrary, "arxvr_engine_recenter_2d"));
+    mArxEnginePollHaptic = reinterpret_cast<ArxEnginePollHapticFn>(
+        dlsym(mArxLibrary, "arxvr_poll_haptic"));
     mArxEngineStop = reinterpret_cast<ArxEngineStopFn>(dlsym(mArxLibrary, "arxvr_engine_stop"));
     if (!mArxEngineStart || !mArxEngineFrame || !mArxEngineIsInGame
         || !mArxEngineIsCinematic || !mArxEngineVrRenderState
-        || !mArxEngineGetVisualState || !mArxEngineRecenter2d || !mArxEngineStop) {
+        || !mArxEngineGetVisualState || !mArxEngineRecenter2d
+        || !mArxEnginePollHaptic || !mArxEngineStop) {
         errorf("ArxVR renderer: engine ABI is incomplete: %s", dlerror());
         mArxEngineStart = nullptr;
         mArxEngineFrame = nullptr;
@@ -242,6 +248,7 @@ bool Application::resolveArxEngine() {
         mArxEngineVrRenderState = nullptr;
         mArxEngineGetVisualState = nullptr;
         mArxEngineRecenter2d = nullptr;
+        mArxEnginePollHaptic = nullptr;
         mArxEngineStop = nullptr;
         return false;
     }
@@ -777,6 +784,9 @@ bool Application::renderArxToCurrentEye(const XrPosef& pose, int32_t eye,
 
             const auto frameStart = std::chrono::steady_clock::now();
             const int frameResult = mArxEngineFrame(engineEye, verticalFovRadians);
+            if (frameResult == 1) {
+                drainArxHaptics();
+            }
             const auto frameEnd = std::chrono::steady_clock::now();
             mArxEyeCpuMilliseconds[renderedStereoEye] +=
                 std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
@@ -1088,7 +1098,11 @@ void Application::inputEvent(int leftright, const ApplicationEvent& event) {
     const float previousSqueeze = mControllerEvent[leftright].squeeze;
     mControllerEvent[leftright] = event;
     mHands->setFingerCurl(leftright, event.trigger, event.squeeze);
-    if (previousSqueeze < 0.55f && event.squeeze >= 0.55f) {
+    // Preserve the PICO sample's generic squeeze feedback only while the Arx
+    // engine is not running. Gameplay haptics are semantic events from libarx;
+    // firing both paths would double-buzz every successful grab.
+    if (mArxEngineStatus != 1
+        && previousSqueeze < 0.55f && event.squeeze >= 0.55f) {
         haptic(leftright, 0.35f, 0.0f, 0.035f);
     }
 
@@ -1138,7 +1152,32 @@ void Application::layout() {
 
 void Application::haptic(int leftright, float amplitude, float frequency/*not used now*/, float duration/*seconds*/) {
     if (mHapticCallback) {
-        mHapticCallback(mHapticCallbackArg, leftright, amplitude, frequency, duration);
+        // hapticCallback expects amplitude, duration in seconds, then frequency.
+        // Keep Application::haptic's public call order (amplitude, frequency, duration)
+        // and translate it here before crossing the callback ABI.
+        mHapticCallback(mHapticCallbackArg, leftright, amplitude, duration, frequency);
+    }
+}
+
+void Application::drainArxHaptics() {
+    if (!mArxEnginePollHaptic) {
+        return;
+    }
+    // Bound work per render frame so a broken producer can never stall OpenXR.
+    for (int drained = 0; drained < 32; ++drained) {
+        ArxVrHapticRequest request{};
+        if (mArxEnginePollHaptic(&request) != 1) {
+            break;
+        }
+        if (request.version != ARXVR_HAPTIC_REQUEST_VERSION || request.hand >= HAND_COUNT) {
+            continue;
+        }
+        const float amplitude = std::max(0.0f, std::min(1.0f, request.amplitude));
+        const float duration = std::max(0.0f, std::min(1.0f, request.durationSeconds));
+        const float frequency = request.frequencyHz > 0.0f ? request.frequencyHz : 0.0f;
+        if (amplitude > 0.0f && duration > 0.0f) {
+            haptic(static_cast<int>(request.hand), amplitude, frequency, duration);
+        }
     }
 }
 

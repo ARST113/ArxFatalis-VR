@@ -1519,6 +1519,7 @@ if (ANDROID)
 	             "${CMAKE_CURRENT_SOURCE_DIR}/src/glad/glad.c"
 	             "${CMAKE_CURRENT_SOURCE_DIR}/src/vr/AndroidVrBridge.cpp"
 	             "${CMAKE_CURRENT_SOURCE_DIR}/src/vr/AndroidVrInput.cpp"
+	             "${CMAKE_CURRENT_SOURCE_DIR}/src/vr/VrHaptics.cpp"
 	             "${CMAKE_CURRENT_SOURCE_DIR}/src/vr/AndroidVrEngine.cpp"
 	             "${CMAKE_CURRENT_SOURCE_DIR}/src/vr/AndroidVrWindow.cpp")
     target_link_libraries(arx "${ARX_LIBRARIES}" etcpak)

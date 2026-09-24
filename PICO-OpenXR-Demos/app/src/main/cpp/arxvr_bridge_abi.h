@@ -49,6 +49,20 @@ struct ArxVrVisualState {
     ArxVrVisualHandPose rightHand;
 };
 
+constexpr std::uint32_t ARXVR_HAPTIC_REQUEST_VERSION = 1u;
+
+struct ArxVrHapticRequest {
+    std::uint32_t version;
+    std::uint32_t hand;
+    std::uint32_t event;
+    float amplitude;
+    float durationSeconds;
+    float frequencyHz;
+};
+
+static_assert(sizeof(ArxVrHapticRequest) == 24,
+              "ArxVrHapticRequest ABI layout changed");
+
 enum ArxVrTrackingValidBits : std::uint32_t {
     ARXVR_VALID_HEAD = 1u << 0,
     ARXVR_VALID_LEFT_AIM = 1u << 1,

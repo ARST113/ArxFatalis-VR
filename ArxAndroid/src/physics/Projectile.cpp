@@ -19,6 +19,7 @@
 
 #include "physics/Projectile.h"
 
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -53,6 +54,11 @@
 #include "util/Flags.h"
 #include "util/Range.h"
 
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrHaptics.h"
+#include "vr/VrProjectileDefenseRuntime.h"
+#endif
+
 
 enum ProjectileFlag : u8 {
 	ATO_UNDERWATER = 1 << 0,
@@ -79,12 +85,29 @@ struct alignas(16) Projectile {
 	EntityHandle source;
 	VertexId attach;
 	ProjectileFlags flags;
+#if defined(ARXVR_ANDROID_BUILD)
+	// Stable across std::vector moves/reallocations for the lifetime of this projectile.
+	std::uint64_t vrDefenseToken = 0;
+#endif
 	
 	Projectile() arx_noexcept_default
 	
 };
 
 static std::vector<Projectile> g_projectiles;
+
+#if defined(ARXVR_ANDROID_BUILD)
+static arxvr::VrProjectileDefenseSystem g_vrProjectileDefense;
+static std::uint64_t g_vrNextProjectileDefenseToken = 1;
+
+static std::uint64_t arxvrNextProjectileDefenseToken() {
+	const std::uint64_t token = g_vrNextProjectileDefenseToken++;
+	if(g_vrNextProjectileDefenseToken == 0) {
+		g_vrNextProjectileDefenseToken = 1;
+	}
+	return token == 0 ? g_vrNextProjectileDefenseToken++ : token;
+}
+#endif
 
 static bool IsPointInField(const Vec3f & pos) {
 	
@@ -102,6 +125,9 @@ static bool IsPointInField(const Vec3f & pos) {
 
 void ARX_THROWN_OBJECT_KillAll() {
 	g_projectiles.clear();
+#if defined(ARXVR_ANDROID_BUILD)
+	g_vrProjectileDefense.resetSession();
+#endif
 }
 
 glm::quat getProjectileQuatFromVector(Vec3f vector) {
@@ -116,6 +142,9 @@ void ARX_THROWN_OBJECT_Throw(EntityHandle source, const Vec3f & position, const 
 	arx_assert(obj);
 	
 	Projectile & projectile = g_projectiles.emplace_back();
+#if defined(ARXVR_ANDROID_BUILD)
+	projectile.vrDefenseToken = arxvrNextProjectileDefenseToken();
+#endif
 	
 	projectile.damages = damages;
 	projectile.position = position;
@@ -237,6 +266,74 @@ static void CheckExp(const Projectile & projectile) {
 	}
 }
 
+#if defined(ARXVR_ANDROID_BUILD)
+static float arxvrProjectileContactRadius(const Projectile & projectile) {
+	float radius = 1.f;
+	for(const EERIE_ACTIONLIST & action : projectile.obj->actionlist) {
+		const float hit = GetHitValue(action.name);
+		if(std::isfinite(hit) && hit >= 0.f) {
+			radius = std::max(radius, hit * 0.5f);
+		}
+	}
+	// Malformed action metadata must not turn an arrow into a room-sized guard
+	// sweep. The upper bound is intentionally generous for non-arrow throwables.
+	return std::clamp(radius, 1.f, 16.f);
+}
+
+static bool arxvrTryDeflectProjectile(Projectile & projectile,
+                                      const Vec3f & previousPosition) {
+	if(projectile.source == EntityHandle_Player || projectile.vrDefenseToken == 0
+	   || projectile.vector == Vec3f(0.f)) {
+		return false;
+	}
+
+	arxvr::VrProjectileSample sample;
+	sample.token = projectile.vrDefenseToken;
+	sample.start = { previousPosition.x, previousPosition.y, previousPosition.z };
+	sample.end = { projectile.position.x, projectile.position.y, projectile.position.z };
+	// Projectile::vector is expressed in Arx world units per millisecond.
+	sample.velocity = { projectile.vector.x * 1000.f,
+	                    projectile.vector.y * 1000.f,
+	                    projectile.vector.z * 1000.f };
+	sample.radius = arxvrProjectileContactRadius(projectile);
+	sample.timestampUs = arxvr::vrDefenseNowMicros();
+
+	arxvr::VrProjectileDeflection deflection;
+	if(!arxvr::vrEvaluateProjectileDefense(arxvr::vrDefenseRuntime(),
+	                                      g_vrProjectileDefense,
+	                                      sample, deflection)) {
+		return false;
+	}
+
+	const Vec3f outgoing(deflection.outgoingVelocity.x,
+	                     deflection.outgoingVelocity.y,
+	                     deflection.outgoingVelocity.z);
+	const float outgoingSpeed = glm::length(outgoing);
+	if(!std::isfinite(outgoingSpeed) || outgoingSpeed <= 0.001f) {
+		return false;
+	}
+
+	projectile.vector = outgoing * 0.001f;
+	const Vec3f contact(deflection.position.x,
+	                    deflection.position.y,
+	                    deflection.position.z);
+	const Vec3f direction = outgoing / outgoingSpeed;
+	const float separation = std::max(sample.radius + 2.f, 4.f);
+	projectile.position = contact + direction * separation;
+	projectile.quat = getProjectileQuatFromVector(projectile.vector) * projectile.rotation;
+
+	const float hapticStrength = std::clamp(deflection.incomingSpeed / 1200.f, 0.3f, 1.f);
+	if(deflection.type == arxvr::VrProjectileDeflectionType::Shield) {
+		arxvrEmitHaptic(VrHapticHand::Left, VrHapticEvent::Block, hapticStrength);
+	} else if(deflection.type == arxvr::VrProjectileDeflectionType::Weapon) {
+		arxvrEmitHaptic(VrHapticHand::Right, VrHapticEvent::Parry, hapticStrength);
+	}
+	ParticleSparkSpawn(contact, 12);
+	ARX_SOUND_PlayCollision("dagger", "metal", 1.f, 1.f, contact, nullptr);
+	return true;
+}
+#endif
+
 void ARX_THROWN_OBJECT_Render() {
 	
 	for(Projectile & projectile : g_projectiles) {
@@ -307,6 +404,9 @@ static void ARX_THROWN_OBJECT_ManageProjectile(Projectile & projectile, ShortGam
 	
 	Vec3f original_pos = projectile.position;
 	projectile.position += projectile.vector * timeDeltaMs;
+#if defined(ARXVR_ANDROID_BUILD)
+	arxvrTryDeflectProjectile(projectile, original_pos);
+#endif
 	
 	if(projectile.gravity != 0.f) {
 		projectile.vector.y += projectile.gravity * timeDeltaMs;

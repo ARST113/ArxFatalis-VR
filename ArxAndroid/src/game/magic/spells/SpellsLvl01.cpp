@@ -45,6 +45,10 @@
 
 #include "util/Range.h"
 
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrSpellAim.h"
+#endif
+
 bool MagicSightSpell::CanLaunch() {
 	return spells.getSpellByCaster(m_caster, m_type) == nullptr;
 }
@@ -133,12 +137,29 @@ void MagicMissileSpell::Launch() {
 	
 	Vec3f startPos = m_hand_pos;
 	float pitch, yaw;
+#if defined(ARXVR_ANDROID_BUILD)
+	bool vrHandAimed = false;
+	Vec3f vrHandDirection(0.f);
+	constexpr float vrPhysicalLaunchOffset = 18.f;
+#endif
 	if(m_caster == EntityHandle_Player) {
 		pitch = player.angle.getPitch();
 		yaw = player.angle.getYaw();
 		if(!m_hand_group) {
 			startPos = player.pos + angleToVectorXZ(yaw);
 		}
+#if defined(ARXVR_ANDROID_BUILD)
+		const arxvr::VrSpellAimRay vrAim = arxvr::vrSpellAimService().ray();
+		if(vrAim.valid) {
+			startPos = Vec3f(vrAim.origin.x, vrAim.origin.y, vrAim.origin.z);
+			vrHandDirection = Vec3f(vrAim.direction.x, vrAim.direction.y,
+			                            vrAim.direction.z);
+			const Anglef handAngles = unitVectorToAngle(vrHandDirection);
+			pitch = handAngles.getPitch();
+			yaw = handAngles.getYaw();
+			vrHandAimed = true;
+		}
+#endif
 	} else {
 		pitch = 0.f;
 		yaw = entities[m_caster]->angle.getYaw();
@@ -147,7 +168,14 @@ void MagicMissileSpell::Launch() {
 		}
 	}
 	
-	startPos += angleToVector(Anglef(pitch, yaw, 0.f)) * 60.f;
+#if defined(ARXVR_ANDROID_BUILD)
+	if(vrHandAimed) {
+		startPos += vrHandDirection * vrPhysicalLaunchOffset;
+	} else
+#endif
+	{
+		startPos += angleToVector(Anglef(pitch, yaw, 0.f)) * 60.f;
+	}
 	
 	if(m_caster != EntityHandle_Player) {
 		Entity * io = entities[m_caster];

@@ -941,7 +941,8 @@ struct OpenXrProgram : IOpenXrProgram {
             OpenXrProgram* thiz = (OpenXrProgram*)arg;
             XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
             vibration.amplitude = amplitude;
-            vibration.duration = seconds * 1000 * 10000000;  //nanoseconds
+            // XrDuration is expressed in nanoseconds: 1 second = 1,000,000,000 ns.
+            vibration.duration = static_cast<XrDuration>(seconds * 1000000000.0f);
             vibration.frequency = frequency;
             XrHapticActionInfo hapticActionInfo{XR_TYPE_HAPTIC_ACTION_INFO};
             hapticActionInfo.action = thiz->m_input.hapticAction;

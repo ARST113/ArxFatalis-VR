@@ -1,0 +1,297 @@
+name: ArxVR Phase 4/5/7 integration helper
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tools/arxvr_apply_phase4_live_integration_v2.py'
+      - 'tools/arxvr_apply_phase4_interaction_service.py'
+      - 'tools/arxvr_apply_phase4_equipped_weapon.py'
+      - 'tools/arxvr_apply_phase5_two_hand_weapon.py'
+      - 'tools/arxvr_apply_phase5_live_defense.py'
+      - 'tools/arxvr_apply_phase5_multistrike_latches.py'
+      - 'tools/arxvr_apply_phase7_rune_runtime.py'
+      - 'tools/arxvr_apply_phase7_spell_aim.py'
+      - '.github/workflows/arxvr-phase4-integrate.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.head_ref == 'vr-foundation-phase1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: vr-foundation-phase1
+          fetch-depth: 0
+
+      - name: Validate integration generators
+        run: |
+          python3 -m py_compile tools/arxvr_apply_phase4_live_integration_v2.py
+          python3 -m py_compile tools/arxvr_apply_phase4_interaction_service.py
+          python3 -m py_compile tools/arxvr_apply_phase4_equipped_weapon.py
+          python3 -m py_compile tools/arxvr_apply_phase5_two_hand_weapon.py
+          python3 -m py_compile tools/arxvr_apply_phase5_live_defense.py
+          python3 -m py_compile tools/arxvr_apply_phase5_multistrike_latches.py
+          python3 -m py_compile tools/arxvr_apply_phase7_rune_runtime.py
+          python3 -m py_compile tools/arxvr_apply_phase7_spell_aim.py
+
+      - name: Restore pre-integration ArxGame and apply guarded patches
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
+          SOURCE=ArxAndroid/src/core/ArxGame.cpp
+          BASE_BLOB=/tmp/arxgame-pre-phase4.cpp
+
+          # Preserve the historical blob byte-for-byte. ArxGame.cpp contains a
+          # mixture of line endings, so normalising the whole file would turn a
+          # small semantic patch into thousands of unrelated changed lines.
+          git show "${BASE_COMMIT}:${SOURCE}" > "${BASE_BLOB}"
+          cp "${BASE_BLOB}" "${SOURCE}"
+
+          # The deterministic ArxGame generators intentionally operate on LF text.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("ArxAndroid/src/core/ArxGame.cpp")
+          data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+          path.write_bytes(data)
+          PY
+
+          python3 tools/arxvr_apply_phase4_live_integration_v2.py
+          python3 tools/arxvr_apply_phase4_interaction_service.py
+          python3 tools/arxvr_apply_phase4_equipped_weapon.py
+          python3 tools/arxvr_apply_phase5_two_hand_weapon.py
+          python3 tools/arxvr_apply_phase5_live_defense.py
+          python3 tools/arxvr_apply_phase5_multistrike_latches.py
+          python3 tools/arxvr_apply_phase7_rune_runtime.py
+          # Spell aim is part of the same canonical generated live integration.
+          # Keeping it here prevents a later Phase 4/5 regeneration from
+          # silently stripping the casting-hand publisher out of ArxGame.cpp.
+          python3 tools/arxvr_apply_phase7_spell_aim.py
+
+          # Reconstruct the generated ArxGame source while retaining the exact
+          # original bytes for every unchanged logical line. Equipment.cpp and
+          # SpellsLvl01.cpp are patched byte-for-byte by their guarded generators.
+          python3 - <<'PY'
+          from pathlib import Path
+          import difflib
+
+          source = Path("ArxAndroid/src/core/ArxGame.cpp")
+          base_path = Path("/tmp/arxgame-pre-phase4.cpp")
+
+          base_raw_lines = base_path.read_bytes().splitlines(keepends=True)
+          generated_lines = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n").splitlines()
+
+          def content(line: bytes) -> bytes:
+              if line.endswith(b"\r\n"):
+                  return line[:-2]
+              if line.endswith(b"\n") or line.endswith(b"\r"):
+                  return line[:-1]
+              return line
+
+          def ending(line: bytes) -> bytes:
+              if line.endswith(b"\r\n"):
+                  return b"\r\n"
+              if line.endswith(b"\n"):
+                  return b"\n"
+              if line.endswith(b"\r"):
+                  return b"\r"
+              return b"\n"
+
+          base_lines = [content(line) for line in base_raw_lines]
+          matcher = difflib.SequenceMatcher(None, base_lines, generated_lines, autojunk=False)
+          output = []
+
+          def nearby_eol(index: int) -> bytes:
+              if 0 <= index < len(base_raw_lines):
+                  return ending(base_raw_lines[index])
+              if index > 0 and index - 1 < len(base_raw_lines):
+                  return ending(base_raw_lines[index - 1])
+              return b"\n"
+
+          for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+              if tag == "equal":
+                  output.extend(base_raw_lines[i1:i2])
+                  continue
+              if tag == "delete":
+                  continue
+
+              eol = nearby_eol(i1)
+              for line in generated_lines[j1:j2]:
+                  output.append(line + eol)
+
+          source.write_bytes(b"".join(output))
+          PY
+
+      - name: Validate generated C++ sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          GAME=ArxAndroid/src/core/ArxGame.cpp
+          EQUIP=ArxAndroid/src/game/Equipment.cpp
+          RUNTIME=ArxAndroid/src/vr/VrDefenseRuntime.h
+          SPELL=ArxAndroid/src/game/magic/spells/SpellsLvl01.cpp
+          grep -F '#include "vr/VrInteractionSystem.h"' "$GAME"
+          grep -F '#include "vr/VrRuneRuntime.h"' "$GAME"
+          grep -F '#include "vr/VrSpellAim.h"' "$GAME"
+          grep -F '#include "game/magic/SpellRecognition.h"' "$GAME"
+          grep -F '#include "vr/VrWeaponContact.h"' "$GAME"
+          grep -F '#include "vr/VrWeaponSystem.h"' "$GAME"
+          grep -F '#include "vr/VrDefenseRuntime.h"' "$GAME"
+          grep -F 'VrImpactGateStatus::Qualified' "$GAME"
+          grep -F 'g_vrInteractions.updateHand(hand, sample)' "$GAME"
+          grep -F 'g_vrInteractions.consumeImpact(hand, impact)' "$GAME"
+          grep -F 'arxvr::VrImpactEvent impact;' "$GAME"
+          grep -F 'updateVrEquippedWeaponCombat' "$GAME"
+          grep -F 'VrImpactSource::EquippedWeapon' "$GAME"
+          grep -F 'vrWeaponSegmentIntersectsAabb' "$GAME"
+          grep -F 'VrWeaponTrackingSample tracking' "$GAME"
+          grep -F 'g_vrWeaponSystem.update(profile, tracking)' "$GAME"
+          grep -F 'g_vrWeaponSystem.buildContactSegment(profile, weaponPose)' "$GAME"
+          grep -F 'secondaryWeaponGripActive' "$GAME"
+          grep -F 'rightHandOrientation * Vec3f(0.f, 1.f, 0.f)' "$GAME"
+          grep -F 'arxvr::vrDefenseRuntime().publishShield(' "$GAME"
+          grep -F 'arxvr::vrDefenseRuntime().publishDefenderWeapon(' "$GAME"
+          grep -F 'arxvr::vrDefenseRuntime().clearDefenderWeapon();' "$GAME"
+          grep -F 'equippedShield && haveLeftHand && !leftDragging' "$GAME"
+          grep -F 'arxvr::vrDefenseRuntime().resetSession();' "$GAME"
+          grep -F 'g_vrRuneRuntime.update(' "$GAME"
+          grep -F 'vrRune.gesture.points' "$GAME"
+          grep -F 'SpellSymbol != g_vrRuneSymbolsBefore' "$GAME"
+          grep -F 'VrHapticEvent::RuneAccepted' "$GAME"
+          grep -F 'VrHapticEvent::RuneRejected' "$GAME"
+          grep -F 'arxvr::vrSpellAimService().clear();' "$GAME"
+          grep -F 'arxvr::vrSpellAimService().update(vrSpellAimSample);' "$GAME"
+          grep -F '#include "vr/VrDefenseRuntime.h"' "$EQUIP"
+          grep -F 'vrHaveIncomingWeapon = arxvr::vrDefenseRuntime().sampleIncomingWeapon' "$EQUIP"
+          grep -F 'vrDefense.defenseLatched(' "$EQUIP"
+          grep -F 'vrDefense.evaluatePlayerDefense(' "$EQUIP"
+          grep -F 'VrHapticEvent::Parry' "$EQUIP"
+          grep -F 'VrHapticEvent::Block' "$EQUIP"
+          grep -F 'ARX_SOUND_PlayCollision(attackerMaterial, "metal"' "$EQUIP"
+          grep -F 'std::array<DefenseLatch, 8> m_latches{};' "$RUNTIME"
+          grep -F 'for(const DefenseLatch & latch : m_latches)' "$RUNTIME"
+          grep -F 'DefenseLatch * target = nullptr;' "$RUNTIME"
+          grep -F '#include "vr/VrSpellAim.h"' "$SPELL"
+          grep -F 'arxvr::vrSpellAimService().ray()' "$SPELL"
+          grep -F 'unitVectorToAngle(vrHandDirection)' "$SPELL"
+          grep -F 'vrPhysicalLaunchOffset' "$SPELL"
+          grep -F 'm_caster == EntityHandle_Player' "$SPELL"
+          grep -F 'startPos += angleToVector(Anglef(pitch, yaw, 0.f)) * 60.f;' "$SPELL"
+          if grep -Fq 'arxvrGetRuneScreenPoint(g_size, vrRunePoint)' "$GAME"; then
+            echo "Legacy HMD-relative rune projection remains in generated ArxGame.cpp" >&2
+            exit 1
+          fi
+          if grep -Fq 'DefenseLatch m_latch{};' "$RUNTIME"; then
+            echo "Legacy single defense latch remains in generated runtime" >&2
+            exit 1
+          fi
+          if grep -Fq 'vrShieldBlocked = arxvr::vrDefenseRuntime().sampleShieldBlock' "$EQUIP"; then
+            echo "Legacy shield-only sampling path found in generated Equipment.cpp" >&2
+            exit 1
+          fi
+          if grep -Fq 'if(target == entities.player() && vrShieldBlocked)' "$EQUIP"; then
+            echo "Legacy shield-only target gate found in generated Equipment.cpp" >&2
+            exit 1
+          fi
+          if grep -Fq '#include "vr/VrHandState.h"' "$GAME"; then
+            echo "Legacy direct VrHandState include found in generated C++" >&2
+            exit 1
+          fi
+          if grep -Fq 'g_vrRightHandImpact' "$GAME" || grep -Fq 'g_vrLeftHandImpact' "$GAME"; then
+            echo "Legacy per-hand state global found in generated C++" >&2
+            exit 1
+          fi
+          if grep -Fq 'static arxvr::VrHandState g_vrRightHandImpact;\n"' "$GAME"; then
+            echo "Serialized Python literal found in generated C++" >&2
+            exit 1
+          fi
+          if grep -Fq '"\n    "' "$GAME"; then
+            echo "Quoted generator fragment found in generated C++" >&2
+            exit 1
+          fi
+
+      - name: Stage and audit live integration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
+          GAME=ArxAndroid/src/core/ArxGame.cpp
+          EQUIP=ArxAndroid/src/game/Equipment.cpp
+          RUNTIME=ArxAndroid/src/vr/VrDefenseRuntime.h
+          SPELL=ArxAndroid/src/game/magic/spells/SpellsLvl01.cpp
+
+          if git diff --quiet -- "$GAME" "$EQUIP" "$RUNTIME" "$SPELL"; then
+            echo "Phase 4/5/7 live integration already matches generated output."
+            echo "ARXVR_PHASE457_DIRTY=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          git add "$GAME" "$EQUIP" "$RUNTIME" "$SPELL"
+          CHANGED_FILES="$(git diff --cached --name-only)"
+          test -n "$CHANGED_FILES"
+          while IFS= read -r changed; do
+            test "$changed" = "$GAME" || test "$changed" = "$EQUIP" || test "$changed" = "$RUNTIME" || test "$changed" = "$SPELL"
+          done <<< "$CHANGED_FILES"
+
+          git -c core.whitespace=cr-at-eol diff --cached --check -- "$GAME" "$EQUIP" "$RUNTIME" "$SPELL"
+
+          if ! git diff --cached --quiet -- "$GAME"; then
+            read ADDED DELETED _ < <(git diff --cached "${BASE_COMMIT}" --numstat -- "$GAME")
+            test "$ADDED" != "-"
+            test "$DELETED" != "-"
+            CHANGED=$((ADDED + DELETED))
+            echo "Semantic Phase 4/5/7 ArxGame diff vs ${BASE_COMMIT}: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+            test "$CHANGED" -le 1550
+          fi
+
+          if ! git diff --cached --quiet -- "$EQUIP"; then
+            read ADDED DELETED _ < <(git diff --cached --numstat -- "$EQUIP")
+            test "$ADDED" != "-"
+            test "$DELETED" != "-"
+            CHANGED=$((ADDED + DELETED))
+            echo "Live defense Equipment diff: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+            test "$CHANGED" -le 180
+          fi
+
+          if ! git diff --cached --quiet -- "$RUNTIME"; then
+            read ADDED DELETED _ < <(git diff --cached --numstat -- "$RUNTIME")
+            test "$ADDED" != "-"
+            test "$DELETED" != "-"
+            CHANGED=$((ADDED + DELETED))
+            echo "Defense runtime latch diff: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+            test "$CHANGED" -le 120
+          fi
+
+          if ! git diff --cached --quiet -- "$SPELL"; then
+            read ADDED DELETED _ < <(git diff --cached --numstat -- "$SPELL")
+            test "$ADDED" != "-"
+            test "$DELETED" != "-"
+            CHANGED=$((ADDED + DELETED))
+            echo "Physical spell-aim diff: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+            test "$CHANGED" -le 100
+          fi
+
+          git diff --cached --stat -- "$GAME" "$EQUIP" "$RUNTIME" "$SPELL"
+          echo "ARXVR_PHASE457_DIRTY=1" >> "$GITHUB_ENV"
+
+      - name: Commit generated live integration
+        if: env.ARXVR_PHASE457_DIRTY == '1'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Regenerate guarded VR live integration"
+
+      - name: Push generated live integration
+        if: env.ARXVR_PHASE457_DIRTY == '1'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git push origin HEAD:vr-foundation-phase1
