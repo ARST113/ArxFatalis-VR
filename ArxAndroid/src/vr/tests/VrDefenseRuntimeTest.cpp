@@ -79,12 +79,44 @@ void testIncomingWeaponBuildsRealVelocityAndBlocks() {
 	assert(event.relativeSpeed > 2999.f && event.relativeSpeed < 3001.f);
 }
 
+void testSampleShieldBlockConveniencePath() {
+	VrDefenseRuntime runtime;
+	const std::uint64_t firstTime = 2000000;
+	const std::uint64_t secondTime = 2010000;
+	runtime.publishShield(51, VrShieldProfile{}, frontShield(), secondTime);
+
+	VrDefenseEvent event;
+	assert(!runtime.sampleShieldBlock(61, 71, { 0.f, 0.f, 20.f }, firstTime, event));
+	assert(event.type == arxvr::VrDefenseEventType::None);
+	assert(runtime.sampleShieldBlock(61, 71, { 0.f, 0.f, -10.f }, secondTime, event));
+	assert(event.type == arxvr::VrDefenseEventType::ShieldBlock);
+	assert(event.relativeSpeed > 2999.f && event.relativeSpeed < 3001.f);
+}
+
 void testStaleShieldRejectsOtherwiseValidContact() {
 	VrDefenseRuntime runtime;
 	runtime.publishShield(21, VrShieldProfile{}, frontShield(), 500000);
 	VrIncomingContact contact = makeIncoming(runtime, 31, 41, 1000000, 1010000);
 	VrDefenseEvent event;
 	assert(!runtime.evaluateShieldBlock(contact, event));
+}
+
+void testConveniencePathClearsRejectedEvent() {
+	VrDefenseRuntime runtime;
+	const std::uint64_t firstTime = 3000000;
+	const std::uint64_t secondTime = 3010000;
+	runtime.publishShield(81, VrShieldProfile{}, frontShield(), secondTime);
+
+	VrDefenseEvent event;
+	assert(!runtime.sampleShieldBlock(91, 101, { 0.f, 0.f, 20.f }, firstTime, event));
+	assert(runtime.sampleShieldBlock(91, 101, { 0.f, 0.f, -10.f }, secondTime, event));
+	assert(event.type == arxvr::VrDefenseEventType::ShieldBlock);
+
+	// Clearing the shield must fail closed and erase the prior accepted event,
+	// so gameplay cannot accidentally reuse an old block result.
+	runtime.clearShield();
+	assert(!runtime.sampleShieldBlock(92, 102, { 0.f, 0.f, 20.f }, secondTime + 10000, event));
+	assert(event.type == arxvr::VrDefenseEventType::None);
 }
 
 void testTimestampRegressionCreatesFreshBaseline() {
@@ -159,7 +191,9 @@ int main() {
 	testPublishedShieldFreshness();
 	testInvalidShieldFailsClosed();
 	testIncomingWeaponBuildsRealVelocityAndBlocks();
+	testSampleShieldBlockConveniencePath();
 	testStaleShieldRejectsOtherwiseValidContact();
+	testConveniencePathClearsRejectedEvent();
 	testTimestampRegressionCreatesFreshBaseline();
 	testLargeGapDoesNotFabricateSweep();
 	testTeleportSpeedDoesNotFabricateSweep();
