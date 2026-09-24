@@ -3,7 +3,9 @@
 #include <android/log.h>
 #include <jni.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -68,17 +70,50 @@ int arxvr_read_tracking(ArxVrTrackingState * state) {
 }
 
 void arxvrQueueHapticRequest(const ArxVrHapticRequest & request) {
-	if(request.version != ARXVR_HAPTIC_REQUEST_VERSION) {
+	if(request.version != ARXVR_HAPTIC_REQUEST_VERSION
+	   || request.hand > 1u || request.event == 0u
+	   || !std::isfinite(request.amplitude)
+	   || !std::isfinite(request.durationSeconds)
+	   || !std::isfinite(request.frequencyHz)
+	   || request.amplitude <= 0.f || request.durationSeconds <= 0.f
+	   || request.frequencyHz < 0.f) {
 		return;
 	}
+
+	ArxVrHapticRequest sanitized = request;
+	sanitized.amplitude = std::clamp(sanitized.amplitude, 0.f, 1.f);
+	// Protect the OpenXR host against accidental effectively-infinite pulses.
+	// Current semantic presets are below 100 ms; two seconds is deliberately
+	// generous for future continuous effects while remaining bounded.
+	sanitized.durationSeconds = std::clamp(sanitized.durationSeconds, 0.001f, 2.f);
+
 	std::lock_guard<std::mutex> lock(g_hapticMutex);
+
+	// A semantic event can be emitted by more than one gameplay path in the same
+	// engine frame. Coalesce an already-pending event for the same hand rather
+	// than serialising duplicate pulses; preserve the strongest/longest request.
+	// This also prevents high-frequency contact code from starving later events.
+	for(size_t offset = 0; offset < g_hapticCount; ++offset) {
+		const size_t index = (g_hapticReadIndex + offset) % kHapticQueueCapacity;
+		ArxVrHapticRequest & pending = g_hapticQueue[index];
+		if(pending.hand == sanitized.hand && pending.event == sanitized.event) {
+			pending.amplitude = std::max(pending.amplitude, sanitized.amplitude);
+			pending.durationSeconds = std::max(pending.durationSeconds,
+			                                   sanitized.durationSeconds);
+			if(sanitized.frequencyHz > 0.f) {
+				pending.frequencyHz = sanitized.frequencyHz;
+			}
+			return;
+		}
+	}
+
 	// Haptics are transient feedback. If gameplay generates more than the host can
 	// consume, discard the oldest pulse instead of blocking the render thread.
 	if(g_hapticCount == kHapticQueueCapacity) {
 		g_hapticReadIndex = (g_hapticReadIndex + 1) % kHapticQueueCapacity;
 		--g_hapticCount;
 	}
-	g_hapticQueue[g_hapticWriteIndex] = request;
+	g_hapticQueue[g_hapticWriteIndex] = sanitized;
 	g_hapticWriteIndex = (g_hapticWriteIndex + 1) % kHapticQueueCapacity;
 	++g_hapticCount;
 }
