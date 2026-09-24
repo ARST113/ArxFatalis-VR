@@ -116,7 +116,11 @@ public:
 			result.strokeEnded = wasCapturing;
 			result.cancelled = wasCapturing;
 			clearRuntimePlane();
-			if(wasCapturing && sample.paintPressed && m_config.requireReleaseAfterTrackingReset
+			// A held trigger defines one physical paint epoch. If its very first
+			// tracked sample is invalid (including paint-down outside the finite
+			// drawing slab), do not let later motion silently begin a rune inside
+			// that same hold. A physical release must delimit the next attempt.
+			if(sample.paintPressed && m_config.requireReleaseAfterTrackingReset
 			   && result.status == VrRuneStatus::TrackingReset) {
 				m_releaseRequired = true;
 				result.blockedUntilRelease = true;
