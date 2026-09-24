@@ -30,8 +30,6 @@ jobs:
           BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
           git show "${BASE_COMMIT}:${SOURCE}" > "${SOURCE}"
-          # The guarded generator uses LF anchors. Normalize its working copy,
-          # then restore the blob's original line-ending convention afterwards.
           python3 - <<'PY'
           from pathlib import Path
           path = Path("ArxAndroid/src/core/ArxGame.cpp")
@@ -68,7 +66,7 @@ jobs:
             echo "Quoted generator fragment found in generated C++" >&2
             exit 1
           fi
-      - name: Commit live integration
+      - name: Stage and audit live integration
         shell: bash
         run: |
           set -euxo pipefail
@@ -77,12 +75,20 @@ jobs:
             echo "No integration diff produced" >&2
             exit 1
           fi
-          git diff --check -- "$SOURCE"
           git diff --stat -- "$SOURCE"
           git add "$SOURCE"
           git diff --cached --check
-          test "$(git diff --cached --name-only)" = "$SOURCE"
+          test "$(git diff --cached --name-only | wc -l)" -eq 1
+          git diff --cached --name-only | grep -Fx "$SOURCE"
+      - name: Commit repaired live integration
+        shell: bash
+        run: |
+          set -euxo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git commit -m "Repair Phase 4 live combat integration"
+      - name: Push repaired live integration
+        shell: bash
+        run: |
+          set -euxo pipefail
           git push origin HEAD:vr-foundation-phase1
