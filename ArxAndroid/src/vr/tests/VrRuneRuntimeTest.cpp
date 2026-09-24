@@ -126,6 +126,41 @@ void trackingResetRequiresPhysicalRelease() {
 	       "a later paint-down should start from a fresh tracking epoch");
 }
 
+void depthEscapeRequiresPhysicalRelease() {
+	arxvr::VrRuneRuntimeConfig config;
+	config.capture.maximumPlaneDistance = 10.f;
+	config.capture.minimumPointDistance = 0.f;
+	config.capture.minimumPathLength = 1.f;
+	config.capture.minimumPointCount = 2;
+	config.capture.maximumHandSpeed = 100000.f;
+	arxvr::VrRuneRuntime runtime(config);
+	auto drawingPlane = plane();
+
+	auto start = sample(100000u, 0.f, 0.f);
+	start.handPosition.z = 3.f;
+	expect(runtime.update(start, drawingPlane).status == arxvr::VrRuneStatus::Capturing,
+	       "depth test precondition should start inside the physical rune slab");
+
+	auto escaped = sample(120000u, 4.f, 0.f);
+	escaped.handPosition.z = 12.f;
+	auto reset = runtime.update(escaped, drawingPlane);
+	expect(reset.status == arxvr::VrRuneStatus::TrackingReset && reset.cancelled
+	       && reset.blockedUntilRelease && runtime.releaseRequired(),
+	       "leaving the physical rune slab mid-stroke must cancel and require trigger release");
+
+	auto returnedWhileHeld = sample(140000u, 8.f, 0.f);
+	returnedWhileHeld.handPosition.z = 0.f;
+	auto blocked = runtime.update(returnedWhileHeld, drawingPlane);
+	expect(blocked.blockedUntilRelease && !runtime.capturing(),
+	       "moving back onto the rune plane while still holding trigger must not resume a split stroke");
+
+	auto released = returnedWhileHeld;
+	released.timestampUs = 160000u;
+	released.paintPressed = false;
+	expect(runtime.update(released, drawingPlane).cancelled && !runtime.releaseRequired(),
+	       "release should clear the depth-reset latch without publishing a gesture");
+}
+
 void shortStrokeEndsWithoutGesture() {
 	arxvr::VrRuneRuntime runtime;
 	auto drawingPlane = plane();
@@ -187,6 +222,7 @@ int main() {
 	liveProjectionUsesLockedPlane();
 	liveFilteringMatchesCaptureSpacing();
 	trackingResetRequiresPhysicalRelease();
+	depthEscapeRequiresPhysicalRelease();
 	shortStrokeEndsWithoutGesture();
 	viewportMappingIsStableAndBounded();
 	resetClearsCaptureAndLatch();
