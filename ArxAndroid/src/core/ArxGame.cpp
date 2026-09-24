@@ -158,6 +158,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "vr/AndroidVrInput.h"
 #include "vr/VrHaptics.h"
 #include "vr/VrInteractionSystem.h"
+#include "vr/VrWeaponContact.h"
 #endif
 #include "platform/Platform.h"
 #include "platform/Process.h"
@@ -534,6 +535,25 @@ static std::uint64_t vrImpactTimestampUs() {
 		std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+static arxvr::VrWeaponClass vrWeaponClassForArx(WeaponType type) {
+	switch(type) {
+		case WEAPON_DAGGER: return arxvr::VrWeaponClass::Dagger;
+		case WEAPON_1H: return arxvr::VrWeaponClass::OneHanded;
+		case WEAPON_2H: return arxvr::VrWeaponClass::TwoHanded;
+		case WEAPON_BOW: return arxvr::VrWeaponClass::Bow;
+		case WEAPON_BARE: return arxvr::VrWeaponClass::Unknown;
+	}
+	return arxvr::VrWeaponClass::Unknown;
+}
+
+static arxvr::VrImpactVector3 vrImpactVector(const Vec3f & value) {
+	return { value.x, value.y, value.z };
+}
+
+static Vec3f vrArxVector(const arxvr::VrImpactVector3 & value) {
+	return Vec3f(value.x, value.y, value.z);
+}
+
 static float distanceBetweenVrBounds(const EERIE_3D_BBOX & a,
                                      const EERIE_3D_BBOX & b) {
 	const float dx = std::max({ 0.f, a.min.x - b.max.x, b.min.x - a.max.x });
@@ -638,6 +658,108 @@ static void updateVrHeldObjectCombat(bool rightHand, bool haveHand,
 	        << " path=" << impact.metrics.pathLength
 	        << " consistency=" << impact.metrics.directionalConsistency
 	        << " damage=" << damage << " life=" << target->_npcdata->lifePool.current;
+}
+
+static Entity * findVrEquippedWeaponTarget(const arxvr::VrWeaponSegment & segment,
+                                             Vec3f & hitPosition,
+                                             float & contactT) {
+	Entity * nearest = nullptr;
+	float nearestT = 2.f;
+	for(Entity & entity : entities.inScene()) {
+		if(!isVrInteractionCandidate(entity) || !(entity.ioflags & IO_NPC)
+		   || !entity._npcdata || entity._npcdata->lifePool.current <= 0.f
+		   || !entity.bbox3D.valid()) {
+			continue;
+		}
+
+		float entryT = 0.f;
+		if(!arxvr::vrWeaponSegmentIntersectsAabb(
+		       segment, vrImpactVector(entity.bbox3D.min),
+		       vrImpactVector(entity.bbox3D.max), entryT)
+		   || entryT >= nearestT) {
+			continue;
+		}
+
+		nearestT = entryT;
+		nearest = &entity;
+		const Vec3f contact = vrArxVector(arxvr::vrWeaponSegmentPoint(segment, entryT));
+		hitPosition = glm::clamp(contact, entity.bbox3D.min, entity.bbox3D.max);
+	}
+
+	contactT = nearest ? nearestT : 0.f;
+	return nearest;
+}
+
+static void updateVrEquippedWeaponCombat(bool rightHand, bool haveHand,
+                                         const Vec3f & handPosition,
+                                         const Vec3f & handDirection,
+                                         Entity & weapon,
+                                         const arxvr::VrWeaponProfile & profile,
+                                         bool allowHit, std::uint64_t timestampUs) {
+	const arxvr::VrHand hand = rightHand ? arxvr::VrHand::Right : arxvr::VrHand::Left;
+	const arxvr::VrWeaponSegment segment = haveHand
+	    ? arxvr::vrBuildWeaponSegment(profile, vrImpactVector(handPosition),
+	                                  vrImpactVector(handDirection))
+	    : arxvr::VrWeaponSegment{};
+
+	arxvr::VrImpactSample sample;
+	sample.motion.timestampUs = timestampUs;
+	if(segment.valid) {
+		sample.motion.x = segment.end.x;
+		sample.motion.y = segment.end.y;
+		sample.motion.z = segment.end.z;
+	}
+	sample.source = arxvr::VrImpactSource::EquippedWeapon;
+	sample.sourceToken = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&weapon));
+	sample.profileOverride = profile.strike;
+	sample.effectiveMass = profile.effectiveMass;
+	sample.gestureActive = haveHand && segment.valid && allowHit;
+	sample.trackingValid = haveHand && segment.valid;
+	sample.useProfileOverride = true;
+
+	const arxvr::VrImpactGateStatus status = g_vrInteractions.updateHand(hand, sample);
+	if(status != arxvr::VrImpactGateStatus::Qualified || !sample.gestureActive) {
+		return;
+	}
+
+	Vec3f hitPosition(0.f);
+	float contactT = 0.f;
+	Entity * target = findVrEquippedWeaponTarget(segment, hitPosition, contactT);
+	if(!target) {
+		return;
+	}
+
+	arxvr::VrImpactEvent impact;
+	if(!g_vrInteractions.consumeImpact(hand, impact)) {
+		return;
+	}
+	impact.attackerToken = static_cast<std::uint64_t>(
+		reinterpret_cast<std::uintptr_t>(entities.player()));
+	impact.targetToken = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(target));
+
+	const float impactSpeed = std::max(impact.metrics.terminalSpeed,
+	                                   impact.metrics.averageSpeed);
+	const float speedScale = glm::clamp(
+		impactSpeed / std::max(profile.strike.minPeakSpeed * 2.f, 1.f), 0.25f, 1.f);
+	const float massScale = glm::clamp(std::sqrt(impact.effectiveMass), 0.75f, 1.35f);
+	const float tipBlend = glm::clamp((contactT - 0.45f) / 0.55f, 0.f, 1.f);
+	const float tipScale = glm::mix(1.f, profile.tipDamageMultiplier, tipBlend);
+	const float strength = glm::clamp(speedScale * massScale * tipScale, 0.25f, 1.f);
+
+	const float damage = ARX_EQUIPMENT_ComputeDamages(
+		entities.player(), target, strength, &hitPosition);
+	ARX_DAMAGES_DurabilityCheck(&weapon, g_framedelay * 0.006f);
+	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
+	                VrHapticEvent::ImpactHeavy,
+	                glm::clamp(strength, 0.45f, 1.f));
+	ARX_PLAYER_Remove_Invisibility();
+	LogInfo << "ArxVR equipped-weapon hit: weapon=" << weapon.idString()
+	        << " target=" << target->idString() << " speed=" << impactSpeed
+	        << " mass=" << impact.effectiveMass << " contactT=" << contactT
+	        << " path=" << impact.metrics.pathLength
+	        << " consistency=" << impact.metrics.directionalConsistency
+	        << " strength=" << strength << " damage=" << damage
+	        << " life=" << target->_npcdata->lifePool.current;
 }
 
 static Entity * findVrFistTarget(const Vec3f & handPosition) {
@@ -749,14 +871,25 @@ static void updateVrPhysicalInteraction() {
 	const bool rightDragging = physicalDragActive && g_vrPhysicalDragUsesRightHand;
 	const bool leftDragging = physicalDragActive && !g_vrPhysicalDragUsesRightHand;
 
-	// Each physical hand owns exactly one impact state. The free hand keeps
-	// collecting fist motion while the other hand holds an object; the drag
-	// hand is updated only as HeldObject so source history is not reset twice
-	// in the same frame.
+	// Each physical hand owns exactly one semantic impact source per frame.
+	// An equipped melee weapon takes ownership of the dominant (right) hand
+	// while it is readied in combat mode; physical drag still has priority.
+	Entity * equippedWeapon = entities.get(player.equiped[EQUIP_SLOT_WEAPON]);
+	const arxvr::VrWeaponProfile equippedProfile = arxvr::vrDefaultWeaponProfile(
+		vrWeaponClassForArx(ARX_EQUIPMENT_GetPlayerWeaponType()));
+	const bool equippedMeleeActive = equippedWeapon && equippedProfile.physicalMelee
+	                              && (player.Interface & INTER_COMBATMODE);
 	if(!rightDragging) {
-		updateVrFistCombat(true, haveRightHand, rightHandPosition,
-		                  arxvrButtonPressed(ARXVR_BUTTON_RIGHT_SQUEEZE),
-		                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
+		if(equippedMeleeActive) {
+			updateVrEquippedWeaponCombat(true, haveRightHand, rightHandPosition,
+			                             rightHandDirection, *equippedWeapon,
+			                             equippedProfile, !BLOCK_PLAYER_CONTROLS,
+			                             impactTimestampUs);
+		} else {
+			updateVrFistCombat(true, haveRightHand, rightHandPosition,
+			                  arxvrButtonPressed(ARXVR_BUTTON_RIGHT_SQUEEZE),
+			                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
+		}
 	}
 	if(!leftDragging) {
 		updateVrFistCombat(false, haveLeftHand, leftHandPosition,
