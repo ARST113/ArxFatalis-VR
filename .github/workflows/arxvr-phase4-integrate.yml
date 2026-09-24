@@ -124,25 +124,25 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
           ! git diff --quiet -- "$SOURCE"
           git add "$SOURCE"
 
-          # CR bytes that terminate historical CRLF lines are valid; ordinary
-          # trailing spaces/tabs introduced by the generator remain failures.
-          git -c core.whitespace=cr-at-eol diff --cached --check
-
           test "$(git diff --cached --name-only | wc -l)" -eq 1
           git diff --cached --name-only | grep -Fx "$SOURCE"
 
-          # Catch another line-ending catastrophe before it can be committed.
-          read ADDED DELETED _ < <(git diff --cached --numstat -- "$SOURCE")
+          # Audit the resulting source against the known pre-integration blob,
+          # not against the immediately preceding broken EOL-churn commit. The
+          # repair commit must necessarily reverse that historical churn once.
+          git -c core.whitespace=cr-at-eol diff --cached "${BASE_COMMIT}" --check -- "$SOURCE"
+          read ADDED DELETED _ < <(git diff --cached "${BASE_COMMIT}" --numstat -- "$SOURCE")
           test "$ADDED" != "-"
           test "$DELETED" != "-"
           CHANGED=$((ADDED + DELETED))
-          echo "Phase 4 live integration diff: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+          echo "Semantic Phase 4 live integration diff vs ${BASE_COMMIT}: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
           test "$CHANGED" -le 700
-          git diff --cached --stat -- "$SOURCE"
+          git diff --cached "${BASE_COMMIT}" --stat -- "$SOURCE"
 
       - name: Commit repaired live integration
         shell: bash
