@@ -82,7 +82,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          git diff --cached --check
+          # ArxGame is stored with CRLF in the historical source snapshot.
+          # Tell Git that CR is part of the line ending rather than trailing whitespace.
+          git -c core.whitespace=cr-at-eol diff --cached --check
       - name: Audit staged scope
         shell: bash
         run: |
