@@ -107,6 +107,34 @@ void degenerateUpGetsStableFallback() {
 	       "fallback plane basis should still emit a finite gesture");
 }
 
+void finitePlaneDepthFailsClosed() {
+	arxvr::VrRuneConfig config;
+	config.maximumPlaneDistance = 10.f;
+	config.minimumPointDistance = 0.f;
+	config.minimumPathLength = 1.f;
+	config.minimumPointCount = 2;
+	config.maximumHandSpeed = 100000.f;
+	arxvr::VrRuneSystem system(config);
+	auto drawingPlane = plane();
+
+	auto outsideAtStart = sample(100000u, 0.f, 0.f);
+	outsideAtStart.handPosition.z = 10.1f;
+	expect(system.update(outsideAtStart, drawingPlane) == arxvr::VrRuneStatus::TrackingReset,
+	       "paint-down outside the finite rune slab must not begin projected capture");
+	expect(!system.capturing(), "out-of-plane paint-down must leave capture idle");
+
+	auto inside = sample(200000u, 0.f, 0.f);
+	inside.handPosition.z = 5.f;
+	expect(system.update(inside, drawingPlane) == arxvr::VrRuneStatus::Capturing,
+	       "paint-down inside the configured depth slab should start capture");
+	auto escaped = sample(220000u, 10.f, 0.f);
+	escaped.handPosition.z = -12.f;
+	expect(system.update(escaped, drawingPlane) == arxvr::VrRuneStatus::TrackingReset,
+	       "leaving the locked plane slab mid-stroke must cancel instead of flattening depth motion");
+	arxvr::VrRuneGesture gesture;
+	expect(!system.consumeGesture(gesture), "depth escape must not publish a partial rune");
+}
+
 void discontinuitiesFailClosed() {
 	arxvr::VrRuneConfig config;
 	config.minimumPointDistance = 0.f;
@@ -166,6 +194,7 @@ void filtersJitterAndRequiresRealStroke() {
 
 void oneShotAndCapacityLimit() {
 	arxvr::VrRuneConfig config;
+	config.halfWidth = 50.f;
 	config.minimumPointDistance = 0.f;
 	config.minimumPathLength = 1.f;
 	config.minimumPointCount = 2;
@@ -182,10 +211,14 @@ void oneShotAndCapacityLimit() {
 	system.update(sample(150000u, 40.f, 0.f, false), drawingPlane);
 	arxvr::VrRuneGesture gesture;
 	expect(system.consumeGesture(gesture), "capacity-limited gesture should remain consumable");
-	expect(gesture.points.size() == 3 && gesture.capacityLimited,
+	expect(gesture.points.size() <= 3 && gesture.capacityLimited,
 	       "point cap should be explicit and keep memory bounded");
+	expect(near(gesture.points.front().x, 0.f) && near(gesture.points.back().x, 0.8f),
+	       "bounded retention must preserve both gesture origin and latest physical endpoint");
 	expect(near(gesture.pathLength, 40.f),
 	       "samples beyond retained-point capacity must keep physical path metrics incremental");
+	expect(gesture.bounds.valid && near(gesture.bounds.max.x, 0.8f),
+	       "gesture bounds must describe the full stroke rather than the pre-cap prefix");
 	arxvr::VrRuneGesture duplicate;
 	expect(!system.consumeGesture(duplicate), "completed gesture should be a one-shot event");
 }
@@ -197,6 +230,13 @@ void invalidInputFailsClosed() {
 	expect(invalidConfigSystem.update(sample(100000u, 0.f, 0.f), plane())
 	       == arxvr::VrRuneStatus::InvalidConfiguration,
 	       "invalid drawing-plane dimensions must be rejected");
+
+	arxvr::VrRuneConfig badDepthConfig;
+	badDepthConfig.maximumPlaneDistance = std::numeric_limits<float>::infinity();
+	arxvr::VrRuneSystem invalidDepthSystem(badDepthConfig);
+	expect(invalidDepthSystem.update(sample(100000u, 0.f, 0.f), plane())
+	       == arxvr::VrRuneStatus::InvalidConfiguration,
+	       "non-finite drawing depth budget must be rejected");
 
 	arxvr::VrRuneSystem system;
 	auto invalidPlane = plane();
@@ -218,6 +258,7 @@ int main() {
 	stablePlaneAndProjection();
 	anisotropicPlanePreservesWorldPathLength();
 	degenerateUpGetsStableFallback();
+	finitePlaneDepthFailsClosed();
 	discontinuitiesFailClosed();
 	filtersJitterAndRequiresRealStroke();
 	oneShotAndCapacityLimit();
