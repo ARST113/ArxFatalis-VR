@@ -15,9 +15,10 @@ struct VrBowConfig {
 	// Draw length is measured directly between the bow-hand anchor and the
 	// string hand. It is clamped so tracking spikes cannot create extra energy.
 	float maximumDrawDistance = 70.f;
-	// Releases below this distance are treated as an aborted nock rather than a
-	// shot. Final values are hardware-tuning candidates on PICO.
-	float minimumReleaseDraw = 10.f;
+	// Require a release beyond the nock-assistance radius. This prevents a hand
+	// acquired at the outer edge of the nock zone from immediately producing a
+	// zero-effort shot. Final values remain hardware-tuning candidates on PICO.
+	float minimumReleaseDraw = 18.f;
 	// Arrow origin is placed slightly in front of the bow hand to avoid spawning
 	// inside the player/bow geometry when the engine adapter launches it.
 	float arrowSpawnOffset = 8.f;
@@ -129,7 +130,8 @@ inline bool vrBowBuildBasis(const VrImpactVector3 & forwardInput,
 inline bool vrBowConfigValid(const VrBowConfig & config) {
 	return std::isfinite(config.nockAcquireDistance) && config.nockAcquireDistance >= 0.f
 	    && std::isfinite(config.maximumDrawDistance) && config.maximumDrawDistance > 0.f
-	    && std::isfinite(config.minimumReleaseDraw) && config.minimumReleaseDraw >= 0.f
+	    && std::isfinite(config.minimumReleaseDraw)
+	    && config.minimumReleaseDraw >= config.nockAcquireDistance
 	    && config.minimumReleaseDraw <= config.maximumDrawDistance
 	    && std::isfinite(config.arrowSpawnOffset) && config.arrowSpawnOffset >= 0.f;
 }
@@ -222,7 +224,6 @@ public:
 		pose.nocked = true;
 
 		if(sample.stringGripPressed) {
-			m_lastPose = pose;
 			return pose;
 		}
 
@@ -266,14 +267,12 @@ private:
 	void resetNock() {
 		m_nocked = false;
 		m_lastTimestampUs = 0;
-		m_lastPose = {};
 	}
 
 	VrBowConfig m_config{};
 	std::uint64_t m_bowToken = 0;
 	std::uint64_t m_lastTimestampUs = 0;
 	bool m_nocked = false;
-	VrBowPose m_lastPose{};
 	VrBowRelease m_release{};
 };
 
