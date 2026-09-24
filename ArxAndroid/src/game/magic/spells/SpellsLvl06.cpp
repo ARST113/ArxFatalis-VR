@@ -36,6 +36,10 @@
 #include "scene/GameSound.h"
 #include "scene/Interactive.h"
 
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrSpellPlacement.h"
+#endif
+
 void RaiseDeadSpell::GetTargetAndBeta(Vec3f & target, float & beta) {
 	
 	bool displace = true;
@@ -281,6 +285,17 @@ void CreateFieldSpell::Launch() {
 		target = entities.player()->pos;
 		beta = player.angle.getYaw();
 		displace = true;
+#if defined(ARXVR_ANDROID_BUILD)
+		if(!(m_flags & SPELLCAST_FLAG_RESTORE)) {
+			arxvr::VrSpellPlacement vrPlacement;
+			if(arxvr::vrSpellHorizontalPlacement(arxvr::vrSpellAimService().ray(),
+			                                     target.y, 250.f, vrPlacement)) {
+				target = Vec3f(vrPlacement.position.x, vrPlacement.position.y,
+				               vrPlacement.position.z);
+				displace = false;
+			}
+		}
+#endif
 	} else {
 		Entity * io = entities.get(m_caster);
 		arx_assert(io);

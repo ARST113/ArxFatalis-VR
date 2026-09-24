@@ -38,6 +38,10 @@
 #include "scene/GameSound.h"
 #include "scene/Interactive.h"
 
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrSpellPlacement.h"
+#endif
+
 void SummonCreatureSpell::GetTargetAndBeta(Vec3f & target, float & beta) {
 	
 	bool displace = false;
@@ -45,6 +49,16 @@ void SummonCreatureSpell::GetTargetAndBeta(Vec3f & target, float & beta) {
 		target = player.basePosition();
 		beta = player.angle.getYaw();
 		displace = true;
+#if defined(ARXVR_ANDROID_BUILD)
+		arxvr::VrSpellPlacement vrPlacement;
+		if(arxvr::vrSpellHorizontalPlacement(arxvr::vrSpellAimService().ray(),
+		                                     target.y, 300.f, vrPlacement)) {
+			target = Vec3f(vrPlacement.position.x, vrPlacement.position.y,
+			               vrPlacement.position.z);
+			beta = vrPlacement.yawDegrees;
+			displace = false;
+		}
+#endif
 	} else {
 		target = entities[m_caster]->pos;
 		beta = entities[m_caster]->angle.getYaw();
@@ -91,7 +105,8 @@ void SummonCreatureSpell::Launch() {
 	m_targetPos = target;
 	ARX_SOUND_PlaySFX(g_snd.SPELL_SUMMON_CREATURE, &m_targetPos);
 	
-	m_fissure.Create(target, MAKEANGLE(player.angle.getYaw()));
+	const float fissureYaw = (m_caster == EntityHandle_Player) ? beta : player.angle.getYaw();
+	m_fissure.Create(target, MAKEANGLE(fissureYaw));
 	m_fissure.SetDuration(2s, 500ms, 1500ms);
 	m_fissure.SetColorBorder(Color3f::red);
 	m_fissure.SetColorRays1(Color3f::red);

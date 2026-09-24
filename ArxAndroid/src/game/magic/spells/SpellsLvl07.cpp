@@ -45,6 +45,7 @@
 
 #if defined(ARXVR_ANDROID_BUILD)
 #include "vr/VrSpellAim.h"
+#include "vr/VrSpellPlacement.h"
 #endif
 
 extern PlatformInstant SLID_START;
@@ -224,6 +225,15 @@ void FireFieldSpell::Launch() {
 		target = player.basePosition();
 		beta = player.angle.getYaw();
 		displace = true;
+#if defined(ARXVR_ANDROID_BUILD)
+		arxvr::VrSpellPlacement vrPlacement;
+		if(arxvr::vrSpellHorizontalPlacement(arxvr::vrSpellAimService().ray(),
+		                                     target.y, 250.f, vrPlacement)) {
+			target = Vec3f(vrPlacement.position.x, vrPlacement.position.y,
+			               vrPlacement.position.z);
+			displace = false;
+		}
+#endif
 	} else {
 		Entity * io = entities.get(m_caster);
 		arx_assert(io);
@@ -351,6 +361,15 @@ void IceFieldSpell::Launch() {
 		target = player.basePosition();
 		beta = player.angle.getYaw();
 		displace = true;
+#if defined(ARXVR_ANDROID_BUILD)
+		arxvr::VrSpellPlacement vrPlacement;
+		if(arxvr::vrSpellHorizontalPlacement(arxvr::vrSpellAimService().ray(),
+		                                     target.y, 250.f, vrPlacement)) {
+			target = Vec3f(vrPlacement.position.x, vrPlacement.position.y,
+			               vrPlacement.position.z);
+			displace = false;
+		}
+#endif
 	} else {
 		Entity * io = entities.get(m_caster);
 		arx_assert(io);
