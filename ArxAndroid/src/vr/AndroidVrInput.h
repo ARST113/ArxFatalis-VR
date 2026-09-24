@@ -14,6 +14,7 @@ class Camera;
 
 void arxvrUpdateGameInput();
 void arxvrResetReferenceHead();
+void arxvrReloadRuntimeConfig();
 void arxvrStartDiagnosticWalk(std::uint64_t trackingFrames);
 void arxvrSetDiagnosticMovement(float strafe, float forward);
 void arxvrSetDiagnosticHand(bool active, const Vec3f & position,
@@ -21,6 +22,7 @@ void arxvrSetDiagnosticHand(bool active, const Vec3f & position,
                             bool indexTrigger = false);
 void arxvrClearDiagnosticControls();
 bool arxvrHasTracking();
+bool arxvrSeatedModeActive();
 
 float arxvrMoveX();
 float arxvrMoveY();
