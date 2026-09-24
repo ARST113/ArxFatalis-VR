@@ -107,7 +107,7 @@ def patch_equipment() -> None:
         "\t\tstd::vector<Entity *> sphereContent;",
         "\t\tif(io_source != entities.player()) {\n"
         "\t\t\tsphere.radius += 15.f;\n"
-        "\t\t}\n\t\t\n"
+        "\t\t}\n\n"
         "#if defined(ARXVR_ANDROID_BUILD)\n"
         "\t\tbool vrShieldBlocked = false;\n"
         "\t\tif(io_source != entities.player()) {\n"
@@ -127,7 +127,7 @@ def patch_equipment() -> None:
         "\t\t\t\tarxvrEmitHaptic(VrHapticHand::Left, VrHapticEvent::Block, strength);\n"
         "\t\t\t}\n"
         "\t\t}\n"
-        "#endif\n\t\t\n"
+        "#endif\n\n"
         "\t\tstd::vector<Entity *> sphereContent;",
         "vrShieldBlocked = arxvr::vrDefenseRuntime().sampleShieldBlock",
     )
@@ -138,7 +138,7 @@ def patch_equipment() -> None:
         "\t\t\t\t\tVec3f pos = target->obj->vertexWorldPositions[hitpoint].v;\n\t\t\t\t\t\n"
         "\t\t\t\t\tfloat dmgs = 0.f;",
         "\t\t\t\t\tColor color = (target->ioflags & IO_NPC) ? target->_npcdata->blood_color : Color::white;\n"
-        "\t\t\t\t\tVec3f pos = target->obj->vertexWorldPositions[hitpoint].v;\n\t\t\t\t\t\n"
+        "\t\t\t\t\tVec3f pos = target->obj->vertexWorldPositions[hitpoint].v;\n\n"
         "#if defined(ARXVR_ANDROID_BUILD)\n"
         "\t\t\t\t\t// A physical shield block consumes only this NPC equipment strike.\n"
         "\t\t\t\t\t// Generic damage, spells and environmental sources continue through\n"
@@ -146,7 +146,7 @@ def patch_equipment() -> None:
         "\t\t\t\t\tif(target == entities.player() && vrShieldBlocked) {\n"
         "\t\t\t\t\t\tcontinue;\n"
         "\t\t\t\t\t}\n"
-        "#endif\n\t\t\t\t\t\n"
+        "#endif\n\n"
         "\t\t\t\t\tfloat dmgs = 0.f;",
         "if(target == entities.player() && vrShieldBlocked)",
     )
