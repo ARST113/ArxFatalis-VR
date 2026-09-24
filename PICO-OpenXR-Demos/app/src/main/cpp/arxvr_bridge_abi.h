@@ -60,6 +60,9 @@ struct ArxVrHapticRequest {
     float frequencyHz;
 };
 
+static_assert(sizeof(ArxVrHapticRequest) == 24,
+              "ArxVrHapticRequest ABI layout changed");
+
 enum ArxVrTrackingValidBits : std::uint32_t {
     ARXVR_VALID_HEAD = 1u << 0,
     ARXVR_VALID_LEFT_AIM = 1u << 1,
