@@ -54,8 +54,11 @@ jobs:
         run: |
           set -euxo pipefail
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
-          SDKMANAGER="$(command -v sdkmanager)"
-          test -n "${SDKMANAGER}"
+          SDKMANAGER="${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "${SDKMANAGER}" ]]; then
+            SDKMANAGER="$(find "${SDK_ROOT}/cmdline-tools" -type f -path '*/bin/sdkmanager' | head -n 1)"
+          fi
+          test -x "${SDKMANAGER}"
           echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "${GITHUB_ENV}"
           echo "ANDROID_HOME=${SDK_ROOT}" >> "${GITHUB_ENV}"
 
