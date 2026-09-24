@@ -48,6 +48,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include <cstring>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <limits>
 #include <sstream>
 #include <string_view>
@@ -156,6 +157,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "vr/AndroidVrBridge.h"
 #include "vr/AndroidVrInput.h"
 #include "vr/VrHaptics.h"
+#include "vr/VrHandState.h"
 #endif
 #include "platform/Platform.h"
 #include "platform/Process.h"
@@ -401,7 +403,6 @@ constexpr float kVrAssistedGrabDistance = 190.f;
 constexpr float kVrAimAssistRadius = 45.f;
 constexpr float kVrPhysicalLeverRadius = 125.f;
 constexpr float kVrFistContactRadius = 34.f;
-constexpr float kVrFistMinimumSpeed = 85.f;
 EntityHandle g_vrInteractionTarget;
 static bool g_vrPhysicalDragUsesRightHand = true;
 
@@ -526,21 +527,19 @@ static Entity * findVrPhysicalInteractionTarget(const Vec3f & handPosition,
 	return nullptr;
 }
 
-struct VrFistState {
-	Vec3f previousPosition = Vec3f(0.f);
-	bool havePreviousPosition = false;
-	PlatformInstant lastHit = 0;
-};
+static arxvr::VrHandState g_vrRightHandImpact;
+"
+    "static arxvr::VrHandState g_vrLeftHandImpact;
 
-static VrFistState g_vrRightFist;
-static VrFistState g_vrLeftFist;
-
-struct VrHeldObjectCombatState {
-	EntityHandle weapon;
-	PlatformInstant lastHit = 0;
-};
-
-static VrHeldObjectCombatState g_vrHeldObjectCombat;
+"
+    "static std::uint64_t vrImpactTimestampUs() {
+"
+    "	return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+"
+    "		std::chrono::steady_clock::now().time_since_epoch()).count());
+"
+    "}
+"
 
 static float distanceBetweenVrBounds(const EERIE_3D_BBOX & a,
                                      const EERIE_3D_BBOX & b) {
@@ -570,70 +569,159 @@ static Entity * findVrHeldObjectTarget(const Entity & heldObject,
 	return nearest;
 }
 
-static void updateVrHeldObjectCombat(bool gripHeld) {
-	Entity * heldObject = getVrPhysicalDragEntity();
-	if(!heldObject || !gripHeld) {
-		return;
-	}
-	if(g_vrHeldObjectCombat.weapon != heldObject->index()) {
-		g_vrHeldObjectCombat.weapon = heldObject->index();
-		g_vrHeldObjectCombat.lastHit = 0;
-	}
+static void updateVrHeldObjectCombat(bool rightHand, bool haveHand,
+"
+    "                                     const Vec3f & handPosition, bool gripHeld,
+"
+    "                                     bool allowHit, std::uint64_t timestampUs) {
+"
+    "	arxvr::VrHandState & state = rightHand ? g_vrRightHandImpact : g_vrLeftHandImpact;
+"
+    "	Entity * heldObject = getVrPhysicalDragEntity();
 
-	const Vec3f velocity = getVrPhysicalDragVelocity();
-	const float speed = glm::length(velocity);
-	if(speed < 75.f) {
-		return;
-	}
-	const PlatformInstant now = g_platformTime.frameStart();
-	if(now - g_vrHeldObjectCombat.lastHit < 300ms) {
-		return;
-	}
-	EERIE_3D_BBOX sweptBounds = heldObject->bbox3D;
-	if(sweptBounds.valid()) {
-		const float frameSeconds = std::max(1.f, toMsf(g_platformTime.lastFrameDuration()))
-		                         * 0.001f;
-		const Vec3f frameMovement = velocity * frameSeconds;
-		sweptBounds.add(heldObject->bbox3D.min + frameMovement);
-		sweptBounds.add(heldObject->bbox3D.max + frameMovement);
-	}
-	Entity * target = findVrHeldObjectTarget(*heldObject, sweptBounds);
-	if(!target) {
-		return;
-	}
+"
+    "	arxvr::VrImpactSample sample;
+"
+    "	sample.motion.timestampUs = timestampUs;
+"
+    "	sample.source = heldObject ? arxvr::VrImpactSource::HeldObject
+"
+    "	                           : arxvr::VrImpactSource::None;
+"
+    "	sample.sourceToken = heldObject
+"
+    "	                   ? static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(heldObject))
+"
+    "	                   : 0;
+"
+    "	sample.gestureActive = heldObject && gripHeld && allowHit;
+"
+    "	sample.trackingValid = haveHand;
+"
+    "	if(haveHand) {
+"
+    "		sample.motion.x = handPosition.x;
+"
+    "		sample.motion.y = handPosition.y;
+"
+    "		sample.motion.z = handPosition.z;
+"
+    "	}
+"
+    "	const arxvr::VrImpactGateStatus status = state.update(sample);
+"
+    "	if(status != arxvr::VrImpactGateStatus::Qualified || !heldObject
+"
+    "	   || !gripHeld || !allowHit || !haveHand) {
+"
+    "		return;
+"
+    "	}
 
-	const Vec3f objectSize = heldObject->bbox3D.valid()
-	                       ? heldObject->bbox3D.max - heldObject->bbox3D.min
-	                       : Vec3f(30.f);
-	const float sizeBonus = glm::clamp(glm::length(objectSize) * 0.015f, 0.f, 5.f);
-	const float impactDamage = glm::clamp(2.f + speed * 0.03f + sizeBonus, 3.f, 18.f);
-	const Vec3f objectCenter = sweptBounds.valid()
-	                         ? (sweptBounds.min + sweptBounds.max) * 0.5f
-	                         : heldObject->pos;
-	Vec3f hitPosition = target->bbox3D.valid()
-	                  ? glm::clamp(objectCenter, target->bbox3D.min, target->bbox3D.max)
-	                  : target->pos;
-	SendIOScriptEvent(entities.player(), target, SM_AGGRESSION);
-	const float damage = damageNpc(*target, impactDamage, entities.player(), nullptr,
-	                               DAMAGE_TYPE_GENERIC, &hitPosition);
-	const std::string_view impactMaterial = !heldObject->weaponmaterial.empty()
-	                                      ? std::string_view(heldObject->weaponmaterial)
-	                                      : std::string_view("wood");
-	ARX_SOUND_PlayCollision("flesh", impactMaterial, 1.f, 1.f,
-	                        hitPosition, entities.player());
-	arxvrEmitHaptic(g_vrPhysicalDragUsesRightHand ? VrHapticHand::Right
-	                                               : VrHapticHand::Left,
-	                VrHapticEvent::ImpactHeavy,
-	                glm::clamp(speed / 300.f, 0.45f, 1.f));
-	g_vrHeldObjectCombat.lastHit = now;
-	++g_vrHeldObjectHitCount;
-	ARX_PLAYER_Remove_Invisibility();
-	LogInfo << "ArxVR held-object hit: weapon=" << heldObject->idString()
-	        << " target=" << target->idString() << " speed=" << speed
-	        << " damage=" << damage << " life=" << target->_npcdata->lifePool.current;
-}
+"
+    "	const Vec3f velocity = getVrPhysicalDragVelocity();
+"
+    "	const float objectSpeed = glm::length(velocity);
+"
+    "	EERIE_3D_BBOX sweptBounds = heldObject->bbox3D;
+"
+    "	if(sweptBounds.valid()) {
+"
+    "		const float frameSeconds = std::max(1.f, toMsf(g_platformTime.lastFrameDuration()))
+"
+    "		                         * 0.001f;
+"
+    "		const Vec3f frameMovement = velocity * frameSeconds;
+"
+    "		sweptBounds.add(heldObject->bbox3D.min + frameMovement);
+"
+    "		sweptBounds.add(heldObject->bbox3D.max + frameMovement);
+"
+    "	}
+"
+    "	Entity * target = findVrHeldObjectTarget(*heldObject, sweptBounds);
+"
+    "	if(!target) {
+"
+    "		return;
+"
+    "	}
 
-static Entity * findVrFistTarget(const Vec3f & handPosition) {
+"
+    "	arxvr::VrQualifiedImpact impact;
+"
+    "	if(!state.consumeQualifiedImpact(impact)) {
+"
+    "		return;
+"
+    "	}
+"
+    "	const float impactSpeed = std::max(objectSpeed, impact.metrics.terminalSpeed);
+"
+    "	const Vec3f objectSize = heldObject->bbox3D.valid()
+"
+    "	                       ? heldObject->bbox3D.max - heldObject->bbox3D.min
+"
+    "	                       : Vec3f(30.f);
+"
+    "	const float sizeBonus = glm::clamp(glm::length(objectSize) * 0.015f, 0.f, 5.f);
+"
+    "	const float impactDamage = glm::clamp(2.f + impactSpeed * 0.03f + sizeBonus, 3.f, 18.f);
+"
+    "	const Vec3f objectCenter = sweptBounds.valid()
+"
+    "	                         ? (sweptBounds.min + sweptBounds.max) * 0.5f
+"
+    "	                         : heldObject->pos;
+"
+    "	Vec3f hitPosition = target->bbox3D.valid()
+"
+    "	                  ? glm::clamp(objectCenter, target->bbox3D.min, target->bbox3D.max)
+"
+    "	                  : target->pos;
+"
+    "	SendIOScriptEvent(entities.player(), target, SM_AGGRESSION);
+"
+    "	const float damage = damageNpc(*target, impactDamage, entities.player(), nullptr,
+"
+    "	                               DAMAGE_TYPE_GENERIC, &hitPosition);
+"
+    "	const std::string_view impactMaterial = !heldObject->weaponmaterial.empty()
+"
+    "	                                      ? std::string_view(heldObject->weaponmaterial)
+"
+    "	                                      : std::string_view("wood");
+"
+    "	ARX_SOUND_PlayCollision("flesh", impactMaterial, 1.f, 1.f,
+"
+    "	                        hitPosition, entities.player());
+"
+    "	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
+"
+    "	                VrHapticEvent::ImpactHeavy,
+"
+    "	                glm::clamp(impactSpeed / 300.f, 0.45f, 1.f));
+"
+    "	++g_vrHeldObjectHitCount;
+"
+    "	ARX_PLAYER_Remove_Invisibility();
+"
+    "	LogInfo << "ArxVR held-object hit: weapon=" << heldObject->idString()
+"
+    "	        << " target=" << target->idString() << " speed=" << impactSpeed
+"
+    "	        << " peak=" << impact.metrics.peakSpeed
+"
+    "	        << " path=" << impact.metrics.pathLength
+"
+    "	        << " consistency=" << impact.metrics.directionalConsistency
+"
+    "	        << " damage=" << damage << " life=" << target->_npcdata->lifePool.current;
+"
+    "}
+
+"
+    "static Entity * findVrFistTarget(const Vec3f & handPosition) {
 	Entity * nearest = nullptr;
 	float nearestDistance = kVrFistContactRadius;
 	for(Entity & entity : entities.inScene()) {
@@ -651,60 +739,113 @@ static Entity * findVrFistTarget(const Vec3f & handPosition) {
 }
 
 static void updateVrFistCombat(bool rightHand, bool haveHand,
-	                            const Vec3f & handPosition, bool fistClosed,
-	                            bool allowHit) {
-	VrFistState & state = rightHand ? g_vrRightFist : g_vrLeftFist;
-	if(!haveHand) {
-		state.havePreviousPosition = false;
-		return;
-	}
+"
+    "                            const Vec3f & handPosition, bool fistClosed,
+"
+    "                            bool allowHit, std::uint64_t timestampUs) {
+"
+    "	arxvr::VrHandState & state = rightHand ? g_vrRightHandImpact : g_vrLeftHandImpact;
+"
+    "	arxvr::VrImpactSample sample;
+"
+    "	sample.motion.timestampUs = timestampUs;
+"
+    "	sample.source = arxvr::VrImpactSource::Fist;
+"
+    "	sample.sourceToken = 0;
+"
+    "	sample.gestureActive = haveHand && allowHit && fistClosed;
+"
+    "	sample.trackingValid = haveHand;
+"
+    "	if(haveHand) {
+"
+    "		sample.motion.x = handPosition.x;
+"
+    "		sample.motion.y = handPosition.y;
+"
+    "		sample.motion.z = handPosition.z;
+"
+    "	}
+"
+    "	const arxvr::VrImpactGateStatus status = state.update(sample);
+"
+    "	if(status != arxvr::VrImpactGateStatus::Qualified
+"
+    "	   || !haveHand || !allowHit || !fistClosed) {
+"
+    "		return;
+"
+    "	}
 
-	if(!state.havePreviousPosition) {
-		state.previousPosition = handPosition;
-		state.havePreviousPosition = true;
-		return;
-	}
+"
+    "	Entity * target = findVrFistTarget(handPosition);
+"
+    "	if(!target) {
+"
+    "		return;
+"
+    "	}
 
-	const float frameMs = std::max(1.f, toMsf(g_platformTime.lastFrameDuration()));
-	const float speed = glm::distance(handPosition, state.previousPosition)
-	                  * (1000.f / frameMs);
-	state.previousPosition = handPosition;
-	if(!allowHit || !fistClosed || speed < kVrFistMinimumSpeed) {
-		return;
-	}
+"
+    "	arxvr::VrQualifiedImpact impact;
+"
+    "	if(!state.consumeQualifiedImpact(impact)) {
+"
+    "		return;
+"
+    "	}
+"
+    "	const float speed = impact.metrics.terminalSpeed;
+"
+    "	const float strength = glm::clamp((speed - 55.f) / 170.f, 0.35f, 1.f);
+"
+    "	Vec3f hitPosition = handPosition;
+"
+    "	float damage = ARX_EQUIPMENT_ComputeDamages(entities.player(), target,
+"
+    "	                                           strength, &hitPosition);
+"
+    "	// A physical contact should not turn into a silent dice-roll miss. Keep the
+"
+    "	// normal armor/critical path above, but guarantee a small bare-hand impact.
+"
+    "	if(damage <= 0.f && target->_npcdata->lifePool.current > 0.f) {
+"
+    "		const float minimumDamage = std::max(1.f, player.m_miscFull.damages * 0.25f);
+"
+    "		damage = damageNpc(*target, minimumDamage, entities.player(), nullptr,
+"
+    "		                   DAMAGE_TYPE_GENERIC, &hitPosition);
+"
+    "	}
+"
+    "	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
+"
+    "	                VrHapticEvent::ImpactLight,
+"
+    "	                glm::clamp(speed / 240.f, 0.35f, 1.f));
+"
+    "	ARX_PLAYER_Remove_Invisibility();
+"
+    "	LogInfo << "ArxVR fist hit: hand=" << (rightHand ? "right" : "left")
+"
+    "	        << " target=" << target->idString() << " speed=" << speed
+"
+    "	        << " peak=" << impact.metrics.peakSpeed
+"
+    "	        << " path=" << impact.metrics.pathLength
+"
+    "	        << " consistency=" << impact.metrics.directionalConsistency
+"
+    "	        << " strength=" << strength << " damage=" << damage
+"
+    "	        << " life=" << target->_npcdata->lifePool.current;
+"
+    "}
 
-	const PlatformInstant now = g_platformTime.frameStart();
-	if(now - state.lastHit < 350ms) {
-		return;
-	}
-	Entity * target = findVrFistTarget(handPosition);
-	if(!target) {
-		return;
-	}
-
-	const float strength = glm::clamp((speed - 55.f) / 170.f, 0.35f, 1.f);
-	Vec3f hitPosition = handPosition;
-	float damage = ARX_EQUIPMENT_ComputeDamages(entities.player(), target,
-	                                           strength, &hitPosition);
-	// A physical contact should not turn into a silent dice-roll miss. Keep the
-	// normal armor/critical path above, but guarantee a small bare-hand impact.
-	if(damage <= 0.f && target->_npcdata->lifePool.current > 0.f) {
-		const float minimumDamage = std::max(1.f, player.m_miscFull.damages * 0.25f);
-		damage = damageNpc(*target, minimumDamage, entities.player(), nullptr,
-		                   DAMAGE_TYPE_GENERIC, &hitPosition);
-	}
-	state.lastHit = now;
-	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
-	                VrHapticEvent::ImpactLight,
-	                glm::clamp(speed / 240.f, 0.35f, 1.f));
-	ARX_PLAYER_Remove_Invisibility();
-	LogInfo << "ArxVR fist hit: hand=" << (rightHand ? "right" : "left")
-	        << " target=" << target->idString() << " speed=" << speed
-	        << " strength=" << strength << " damage=" << damage
-	        << " life=" << target->_npcdata->lifePool.current;
-}
-
-static void updateVrPhysicalInteraction() {
+"
+    "static void updateVrPhysicalInteraction() {
 	// Keep a captured trigger suppressed through its release frame. Clear it on
 	// the following idle frame so a scripted use cannot also become a weapon hit.
 	if(arxvrDirectInteractionTriggerCaptured()
@@ -714,64 +855,142 @@ static void updateVrPhysicalInteraction() {
 	}
 
 	if(!g_haveVrCenterCamera || ARXmenu.mode() != Mode_InGame) {
+		g_vrRightHandImpact.resetSession();
+		g_vrLeftHandImpact.resetSession();
 		g_vrInteractionTarget = EntityHandle();
 		arxvrSetDirectInteractionTriggerCaptured(false);
 		return;
 	}
 
-	Vec3f rightHandPosition;
-	Vec3f rightHandDirection;
-	Vec3f leftHandPosition;
-	Vec3f leftHandDirection;
-	glm::quat rightHandOrientation(1.f, 0.f, 0.f, 0.f);
-	glm::quat leftHandOrientation(1.f, 0.f, 0.f, 0.f);
-	const bool haveRightHand = arxvrGetHandWorldPose(true, g_vrCenterCamera,
-	                                                player.angle.getYaw(),
-	                                                rightHandPosition,
-	                                                rightHandDirection,
-	                                                rightHandOrientation);
-	const bool haveLeftHand = arxvrGetHandWorldPose(false, g_vrCenterCamera,
-	                                               player.angle.getYaw(),
-	                                               leftHandPosition,
-	                                               leftHandDirection,
-	                                               leftHandOrientation);
-	if(!haveRightHand && !haveLeftHand) {
-		g_vrInteractionTarget = EntityHandle();
-		return;
-	}
+	Vec3f rightHandPosition(0.f);
+"
+    "	Vec3f rightHandDirection(0.f);
+"
+    "	Vec3f leftHandPosition(0.f);
+"
+    "	Vec3f leftHandDirection(0.f);
+"
+    "	glm::quat rightHandOrientation(1.f, 0.f, 0.f, 0.f);
+"
+    "	glm::quat leftHandOrientation(1.f, 0.f, 0.f, 0.f);
+"
+    "	const bool haveRightHand = arxvrGetHandWorldPose(true, g_vrCenterCamera,
+"
+    "	                                                player.angle.getYaw(),
+"
+    "	                                                rightHandPosition,
+"
+    "	                                                rightHandDirection,
+"
+    "	                                                rightHandOrientation);
+"
+    "	const bool haveLeftHand = arxvrGetHandWorldPose(false, g_vrCenterCamera,
+"
+    "	                                               player.angle.getYaw(),
+"
+    "	                                               leftHandPosition,
+"
+    "	                                               leftHandDirection,
+"
+    "	                                               leftHandOrientation);
+"
+    "	const std::uint64_t impactTimestampUs = vrImpactTimestampUs();
+"
+    "	const bool physicalDragActive = isVrPhysicalDragActive();
+"
+    "	const bool rightDragging = physicalDragActive && g_vrPhysicalDragUsesRightHand;
+"
+    "	const bool leftDragging = physicalDragActive && !g_vrPhysicalDragUsesRightHand;
 
-	const bool physicalDragActive = isVrPhysicalDragActive();
-	updateVrFistCombat(true, haveRightHand, rightHandPosition,
-	                  arxvrButtonPressed(ARXVR_BUTTON_RIGHT_SQUEEZE),
-	                  !physicalDragActive && !BLOCK_PLAYER_CONTROLS);
-	updateVrFistCombat(false, haveLeftHand, leftHandPosition,
-	                  arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
-	                  !physicalDragActive && !BLOCK_PLAYER_CONTROLS);
+"
+    "	// Each physical hand owns exactly one impact state. The free hand keeps
+"
+    "	// collecting fist motion while the other hand holds an object; the drag
+"
+    "	// hand is updated only as HeldObject so source history is not reset twice
+"
+    "	// in the same frame.
+"
+    "	if(!rightDragging) {
+"
+    "		updateVrFistCombat(true, haveRightHand, rightHandPosition,
+"
+    "		                  arxvrButtonPressed(ARXVR_BUTTON_RIGHT_SQUEEZE),
+"
+    "		                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
+"
+    "	}
+"
+    "	if(!leftDragging) {
+"
+    "		updateVrFistCombat(false, haveLeftHand, leftHandPosition,
+"
+    "		                  arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
+"
+    "		                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
+"
+    "	}
 
-	if(physicalDragActive) {
-		const bool haveDragHand = g_vrPhysicalDragUsesRightHand ? haveRightHand : haveLeftHand;
-		const Vec3f & dragPosition = g_vrPhysicalDragUsesRightHand
-		                           ? rightHandPosition : leftHandPosition;
-		const Vec3f & dragDirection = g_vrPhysicalDragUsesRightHand
-		                            ? rightHandDirection : leftHandDirection;
-		const glm::quat & dragOrientation = g_vrPhysicalDragUsesRightHand
-		                                  ? rightHandOrientation : leftHandOrientation;
-		const std::uint32_t gripButton = g_vrPhysicalDragUsesRightHand
-		                               ? ARXVR_BUTTON_RIGHT_SQUEEZE
-		                               : ARXVR_BUTTON_LEFT_SQUEEZE;
-		// A temporarily lost controller pose must not feed uninitialised
-		// coordinates into the held object. Freeze it for that frame and resume
-		// the same grab when tracking returns.
-		if(haveDragHand) {
-			const bool gripHeld = arxvrButtonPressed(gripButton);
-			updateVrPhysicalDragPose(dragPosition, dragDirection, dragOrientation,
-			                         gripHeld);
-			updateVrHeldObjectCombat(gripHeld && !BLOCK_PLAYER_CONTROLS);
-		}
-		return;
-	}
+"
+    "	if(physicalDragActive) {
+"
+    "		const bool haveDragHand = g_vrPhysicalDragUsesRightHand ? haveRightHand : haveLeftHand;
+"
+    "		const Vec3f & dragPosition = g_vrPhysicalDragUsesRightHand
+"
+    "		                           ? rightHandPosition : leftHandPosition;
+"
+    "		const Vec3f & dragDirection = g_vrPhysicalDragUsesRightHand
+"
+    "		                            ? rightHandDirection : leftHandDirection;
+"
+    "		const glm::quat & dragOrientation = g_vrPhysicalDragUsesRightHand
+"
+    "		                                  ? rightHandOrientation : leftHandOrientation;
+"
+    "		const std::uint32_t gripButton = g_vrPhysicalDragUsesRightHand
+"
+    "		                               ? ARXVR_BUTTON_RIGHT_SQUEEZE
+"
+    "		                               : ARXVR_BUTTON_LEFT_SQUEEZE;
+"
+    "		const bool gripHeld = arxvrButtonPressed(gripButton);
+"
+    "		// A temporarily lost controller pose must not feed uninitialised
+"
+    "		// coordinates into the held object. Freeze it for that frame, while
+"
+    "		// explicitly failing the impact gate closed until tracking recovers.
+"
+    "		if(haveDragHand) {
+"
+    "			updateVrPhysicalDragPose(dragPosition, dragDirection, dragOrientation,
+"
+    "			                         gripHeld);
+"
+    "		}
+"
+    "		updateVrHeldObjectCombat(g_vrPhysicalDragUsesRightHand, haveDragHand,
+"
+    "		                         dragPosition, gripHeld, !BLOCK_PLAYER_CONTROLS,
+"
+    "		                         impactTimestampUs);
+"
+    "		return;
+"
+    "	}
 
-	Entity * rightTarget = haveRightHand
+"
+    "	if(!haveRightHand && !haveLeftHand) {
+"
+    "		g_vrInteractionTarget = EntityHandle();
+"
+    "		return;
+"
+    "	}
+
+"
+    "	Entity * rightTarget = haveRightHand
 	                    ? findVrPhysicalInteractionTarget(rightHandPosition,
 	                                                      rightHandDirection)
 	                    : nullptr;
@@ -1084,47 +1303,47 @@ bool ArxGame::initialize() {
 }
 
 bool ArxGame::initializeVr(RenderWindow * externalWindow) {
-	
+
 	bool init;
-	
+
 	init = initConfig();
 	if(!init) {
 		LogCritical << "Failed to initialize the config subsystem";
 		return false;
 	}
-	
+
 	init = externalWindow ? initWindow(externalWindow) : initWindow();
 	if(!init) {
 		return false;
 	}
-	
+
 	init = initGameData();
 	if(!init) {
 		return false;
 	}
-	
+
 	init = initInput();
 	if(!init) {
 		return false;
 	}
-	
+
 	init = initSound();
 	if(!init) {
 		return false;
 	}
-	
+
 	init = initLocalisation();
 	if(!init) {
 		LogCritical << "Failed to initialize the localisation subsystem";
 		return false;
 	}
-	
+
 	init = initGame();
 	if(!init) {
 		LogCritical << "Failed to initialize game";
 		return false;
 	}
-	
+
 	return true;
 }
 
@@ -1764,56 +1983,56 @@ void ArxGame::shutdownVr() {
 }
 
 static bool migrateFilenames(fs::path path, bool is_dir) {
-	
+
 	std::string_view name = path.filename();
 	std::string lowercase = util::toLowercase(name);
-	
+
 	bool migrated = true;
-	
+
 	if(lowercase != name) {
-		
+
 		fs::path dst = path.parent() / lowercase;
-		
+
 		LogInfo << "Renaming " << path << " to " << dst.filename();
-		
+
 		if(fs::rename(path, dst)) {
 			path = dst;
 		} else {
 			migrated = false;
 		}
 	}
-	
+
 	if(is_dir) {
 		for(fs::directory_iterator it(path); !it.end(); ++it) {
 			migrated &= migrateFilenames(path / it.name(), it.is_directory());
 		}
 	}
-	
+
 	return migrated;
 }
 
 static bool migrateFilenames(const fs::path & configFile) {
 #ifndef ANDROID   
 	LogInfo << "Changing filenames to lowercase...";
-	
+
 	static const char * files[] = { "cfg.ini", "cfg_default.ini",
 	 "sfx.pak", "loc.pak", "data2.pak", "data.pak", "speech.pak", "loc_default.pak", "speech_default.pak",
 	 "save", "editor", "game", "graph", "localisation", "misc", "sfx", "speech" };
 	std::set<std::string_view> fileset(std::begin(files), std::end(files));
-	
+
 	bool migrated = true;
-	
+
 	for(fs::directory_iterator it(fs::getUserDir()); !it.end(); ++it) {
 		std::string file = it.name();
 		if(fileset.find(util::toLowercase(file)) != fileset.end()) {
 			migrated &= migrateFilenames(fs::getUserDir() / file, it.is_directory());
 		}
 	}
-	
+
 	if(!migrated) {
 		LogCritical << "Could not rename all files to lowercase, please do so manually and set migration=1 under [misc] in " << configFile;
 	}
-	
+
 	return migrated;
 #else
     return true;
@@ -1821,20 +2040,20 @@ static bool migrateFilenames(const fs::path & configFile) {
 }
 
 bool ArxGame::initConfig() {
-	
+
 	// Initialize config first, before anything else.
 	fs::path configFile = fs::getConfigDir() / "cfg.ini";
-	
+
 	config.setOutputFile(configFile);
-	
+
 	bool migrated = false;
 	if(!fs::exists(configFile)) {
-		
+
 		migrated = migrateFilenames(configFile);
 		if(!migrated) {
 			return false;
 		}
-		
+
 		fs::path oldConfigFile = fs::getUserDir() / "cfg.ini";
 		if(fs::exists(oldConfigFile)) {
 			if(!fs::rename(oldConfigFile, configFile)) {
@@ -1845,19 +2064,19 @@ bool ArxGame::initConfig() {
 			}
 		}
 	}
-	
+
 	LogInfo << "Using config file " << configFile;
 	if(!config.init(configFile)) {
-		
+
 		LogWarning << "Could not read config files cfg.ini and cfg_default.ini,"
 		           << " using defaults";
-		
+
 		// Save a default config file so users have a chance to edit it even if we crash.
 		config.save();
 	}
-	
+
 	Logger::configure(config.misc.debug);
-	
+
 	if(!migrated && config.misc.migration < Config::CaseSensitiveFilenames) {
 		migrated = migrateFilenames(configFile);
 		if(!migrated) {
@@ -1867,50 +2086,50 @@ bool ArxGame::initConfig() {
 	if(migrated) {
 		config.misc.migration = Config::CaseSensitiveFilenames;
 	}
-	
+
 	if(!fs::create_directories(fs::getUserDir() / "save")) {
 		LogWarning << "Failed to create save directory";
 	}
-	
+
 	return true;
 }
 
 void ArxGame::setWindowSize(bool fullscreen) {
-	
+
 	if(fullscreen) {
-		
+
 		// Clamp to a sane resolution!
 		if(config.video.mode.resolution != Vec2i(0)) {
 			config.video.mode.resolution = glm::max(config.video.mode.resolution, Vec2i(640, 480));
 		}
-		
+
 		getWindow()->setFullscreenMode(config.video.mode);
-		
+
 	} else {
-		
+
 		// Clamp to a sane window size!
 		config.window.size = glm::max(config.window.size, Vec2i(640, 480));
-		
+
 		getWindow()->setWindowSize(config.window.size);
-		
+
 	}
 }
 
 bool ArxGame::initWindow(RenderWindow * window) {
-	
+
 	arx_assert(m_MainWindow == nullptr);
-	
+
 	m_MainWindow = window;
-	
+
 	if(!m_MainWindow->initializeFramework()) {
 		m_MainWindow = nullptr;
 		return false;
 	}
-	
+
 	// Register ourself as a listener for this window messages
 	m_MainWindow->addListener(this);
 	m_MainWindow->getRenderer()->addListener(this);
-	
+
 	// Find the next best available fullscreen mode.
 	if(config.video.mode.resolution != Vec2i(0)) {
 		const RenderWindow::DisplayModes & modes = window->getDisplayModes();
@@ -1929,7 +2148,7 @@ bool ArxGame::initWindow(RenderWindow * window) {
 			config.video.mode = mode;
 		}
 	}
-	
+
 	m_MainWindow->setTitle(arx_name + " " + arx_version);
 	m_MainWindow->setMinimizeOnFocusLost(config.window.minimizeOnFocusLost);
 #ifdef ANDROID   
@@ -1939,27 +2158,27 @@ bool ArxGame::initWindow(RenderWindow * window) {
 #endif    
 	m_MainWindow->setMaxMSAALevel(config.video.antialiasing ? 8 : 1);
 	m_MainWindow->setVSync(benchmark::isEnabled() ? 0 : config.video.vsync);
-	
+
 	setWindowSize(config.video.fullscreen);
-	
+
 	if(!m_MainWindow->initialize()) {
 		m_MainWindow = nullptr;
 		return false;
 	}
-	
+
 	if(GRenderer == nullptr) {
 		// We could not initialize all resources in onRendererInit().
 		m_MainWindow = nullptr;
 		return false;
 	}
-	
+
 	return true;
 }
 
 bool ArxGame::initWindow() {
-	
+
 	arx_assert(m_MainWindow == nullptr);
-	
+
 	#if ARX_HAVE_SDL2
 	if(!m_MainWindow) {
 		RenderWindow * window = new SDL2Window;
@@ -1968,7 +2187,7 @@ bool ArxGame::initWindow() {
 		}
 	}
 	#endif
-	
+
 	#if ARX_HAVE_SDL1
 	if(!m_MainWindow) {
 		RenderWindow * window = new SDL1Window;
@@ -1977,47 +2196,47 @@ bool ArxGame::initWindow() {
 		}
 	}
 	#endif
-	
+
 	if(!m_MainWindow) {
 		LogCritical << "Graphics initialization failed";
 		return false;
 	}
-	
+
 	return true;
 }
 
 bool ArxGame::initInput() {
-	
+
 	LogDebug("Input init");
 	bool init = ARX_INPUT_Init(m_MainWindow);
 	if(!init) {
 		LogCritical << "Input initialization failed";
 	}
-	
+
 	return init;
 }
 
 bool ArxGame::initSound() {
-	
+
 	LogDebug("Sound init");
 	bool init = ARX_SOUND_Init();
 	if(!init) {
 		LogWarning << "Sound initialization failed";
 	}
-	
+
 	return true;
 }
 
 bool ArxGame::initGameData() {
-	
+
 	bool init = addPaks();
 	if(!init) {
 		LogCritical << "Failed to initialize the game data";
 		return false;
 	}
-	
+
 	savegames.update(true);
-	
+
 	return init;
 }
 
@@ -2027,23 +2246,23 @@ TextureContainer * arx_logo_tc = nullptr;
 
 
 static void LoadSysTextures() {
-	
+
 	MagicFlareLoadTextures();
 
 	spellDataInit();
 
 	enviro = TextureContainer::LoadUI("graph/particles/enviro", TextureContainer::NoColorKey);
-	
+
 	ARX_INTERFACE_DrawNumberInit();
 	initLightFlares();
 	ombrignon = TextureContainer::LoadUI("graph/particles/ombrignon");
 	arx_logo_tc = TextureContainer::LoadUI("graph/interface/icons/arx_logo_32");
-	
+
 	g_hudRoot.init();
-	
+
 	// Load book textures and text
 	g_bookResouces.init();
-	
+
 }
 
 class GameFlow {
@@ -2126,7 +2345,7 @@ static void loadSave(const std::string & saveFile) {
 ARX_PROGRAM_OPTION_ARG("loadsave", "", "Load a specific savegame file", &loadSave, "SAVEFILE")
 
 static bool HandleGameFlowTransitions() {
-	
+
 	const PlatformDuration TRANSITION_DURATION = 3600ms;
 	static PlatformInstant TRANSITION_START = 0;
 
@@ -2145,48 +2364,48 @@ static bool HandleGameFlowTransitions() {
 		ARX_MENU_Launch(false);
 		GameFlow::setTransition(GameFlow::InGame);
 	}
-		
+
 	if(GameFlow::getTransition() == GameFlow::FirstLogo) {
-		
+
 		benchmark::begin(benchmark::Splash);
-		
+
 		if(TRANSITION_START == 0) {
 			if(!ARX_INTERFACE_InitFISHTANK()) {
 				GameFlow::setTransition(GameFlow::SecondLogo);
 				return true;
 			}
-			
+
 			TRANSITION_START = g_platformTime.frameStart();
 		}
 
 		ARX_INTERFACE_ShowFISHTANK();
-		
+
 		PlatformDuration elapsed = g_platformTime.frameStart() - TRANSITION_START;
 
 		if(elapsed > TRANSITION_DURATION) {
 			TRANSITION_START = 0;
 			GameFlow::setTransition(GameFlow::SecondLogo);
 		}
-		
+
 		return true;
 	}
-	
+
 	if(GameFlow::getTransition() == GameFlow::SecondLogo) {
-		
+
 		benchmark::begin(benchmark::Splash);
-		
+
 		if(TRANSITION_START == 0) {
 			if(!ARX_INTERFACE_InitARKANE()) {
 				GameFlow::setTransition(GameFlow::LoadingScreen);
 				return true;
 			}
-			
+
 			TRANSITION_START = g_platformTime.frameStart();
 			ARX_SOUND_PlayInterface(g_snd.PLAYER_HEART_BEAT);
 		}
 
 		ARX_INTERFACE_ShowARKANE();
-		
+
 		PlatformDuration elapsed = g_platformTime.frameStart() - TRANSITION_START;
 
 		if(elapsed > TRANSITION_DURATION) {
@@ -2200,20 +2419,20 @@ static bool HandleGameFlowTransitions() {
 	if(GameFlow::getTransition() == GameFlow::LoadingScreen) {
 		ARX_INTERFACE_KillFISHTANK();
 		ARX_INTERFACE_KillARKANE();
-		
+
 		benchmark::begin(benchmark::LoadLevel);
-		
+
 		ARX_CHANGELEVEL_StartNew();
-		
+
 		progressBarReset();
 		progressBarSetTotal(108);
 		LoadLevelScreen(g_areaToLoad);
-		
+
 		DanaeLoadLevel(g_areaToLoad);
-		
+
 		USE_PLAYERCOLLISIONS = g_initialPlayerCollision;
 		g_initialPlayerCollision = true;
-		
+
 		GameFlow::setTransition(GameFlow::InGame);
 		return false;
 	}
@@ -2228,65 +2447,65 @@ bool ArxGame::initGame()
 		LogCritical << "Error accessing current game directory";
 		return false;
 	}
-	
+
 	ScriptEvent::init();
-	
+
 	g_fpsCounter.CalcFPS(true);
-	
+
 	g_miniMap.mapMarkerInit();
-	
+
 	ARX_SPELLS_CancelSpellTarget();
-	
+
 	LogDebug("Danae Start");
-	
+
 	LogDebug("Project Init");
-	
+
 	PUSH_PLAYER_FORCE = Vec3f(0.f);
 	ARX_SPECIAL_ATTRACTORS_Reset();
 	LogDebug("Attractors Init");
 	ARX_SPELLS_Precast_Reset();
 	LogDebug("Spell Init");
-	
+
 	for(size_t t = 0; t < MAX_GOLD_COINS_VISUALS; t++) {
 		GoldCoinsObj[t] = nullptr;
 		GoldCoinsTC[t] = nullptr;
 	}
-	
+
 	LogDebug("LSV Init");
 	g_teleportToArea = { };
 	TELEPORT_TO_POSITION.clear();
 	LogDebug("Mset");
-	
+
 	LogDebug("AnimManager Init");
 	ARX_SCRIPT_EventStackInit();
 	LogDebug("EventStack Init");
 	ARX_EQUIPMENT_Init();
 	LogDebug("AEQ Init");
-	
+
 	ARX_SCRIPT_Timer_ClearAll();
 	LogDebug("Timer Init");
 	ARX_FOGS_Clear();
 	LogDebug("Fogs Init");
-	
+
 	EERIE_LIGHT_GlobalInit();
 	LogDebug("Lights Init");
-	
+
 	LogDebug("Svars Init");
-	
+
 	entities.init();
-	
+
 	player = ARXCHARACTER();
 	ARX_PLAYER_InitPlayer();
-	
+
 	notification_ClearAll();
 	RemoveQuakeFX();
-	
+
 	LogDebug("Launching DANAE");
-	
+
 	if(!AdjustUI()) {
 		return false;
 	}
-	
+
 	ARXMenu_Options_Video_SetFogDistance(config.video.fogDistance);
 	ARXMenu_Options_Video_SetDetailsQuality(config.video.levelOfDetail);
 #if defined(ARXVR_ANDROID_BUILD)
@@ -2301,19 +2520,19 @@ bool ArxGame::initGame()
 	ARXMenu_Options_Audio_SetSpeechVolume(config.audio.speechVolume);
 	ARXMenu_Options_Audio_SetAmbianceVolume(config.audio.ambianceVolume);
 	ARXMenu_Options_Audio_ApplyGameVolumes();
-	
+
 	GInput->setMouseSensitivity(config.input.mouseSensitivity);
 	GInput->setMouseAcceleration(config.input.mouseAcceleration);
 	GInput->setInvertMouseY(config.input.invertMouse);
 	GInput->setRawMouseInput(config.input.rawMouseInput);
-	
+
 	g_miniMap.firstInit(&player, &entities);
-	
+
 	player.m_torchColor = Color3f(1.f, 0.8f, 0.66666f);
 	LogDebug("InitializeDanae");
-	
+
 	g_tiles = new TileData();
-	
+
 	ARX_MISSILES_ClearAll();
 	spells.init();
 
@@ -2321,15 +2540,15 @@ bool ArxGame::initGame()
 	ARX_PARTICLES_ClearAll();
 	ParticleSparkClear();
 	ARX_MAGICAL_FLARES_FirstInit();
-	
+
 	LastLoadedScene.clear();
-	
+
 	EERIE_PORTAL_Release();
 	FreeRoomDistance();
-	
+
 	player.size = Vec3f(player.baseRadius(), -player.baseHeight(), player.baseRadius());
 	player.desiredangle = player.angle = Anglef(3.f, 268.f, 0.f);
-	
+
 	g_playerCamera.angle = player.angle;
 	g_playerCamera.m_pos = Vec3f(900.f, player.baseHeight(), 4340.f);
 	g_playerCamera.setFov(glm::radians(config.video.fov));
@@ -2340,10 +2559,10 @@ bool ArxGame::initGame()
 	g_playerCamera.cdepth = 1500.f;
 #endif
 	SetActiveCamera(&g_playerCamera);
-	
+
 	LoadSysTextures();
 	cursorTexturesInit();
-	
+
 	PakReader::ReleaseFlags release = g_resources->getReleaseType();
 	if((release & PakReader::Demo) && (release & PakReader::FullGame)) {
 		LogWarning << "Mixed demo and full game data files!";
@@ -2358,58 +2577,58 @@ bool ArxGame::initGame()
 		LogWarning << "Neither demo nor full game data files loaded!";
 		CrashHandler::setVariable("Data files", "unknown");
 	}
-	
+
 	LogDebug("Before Run...");
-	
+
 	cinematicInit();
-	
+
 	long old = GLOBAL_EERIETEXTUREFLAG_LOADSCENE_RELEASE;
 	GLOBAL_EERIETEXTUREFLAG_LOADSCENE_RELEASE = -1;
-	
+
 	gui::NecklaceInit();
 
-	
+
 	drawDebugInitialize();
 
 	eyeball.init();
 	LoadSpellModels();
 	particleParametersInit();
-	
+
 	cameraobj = loadObject("graph/obj3d/interactive/system/camera/camera.teo");
 	markerobj = loadObject("graph/obj3d/interactive/system/marker/marker.teo");
 	arrowobj = loadObject("graph/obj3d/interactive/items/weapons/arrow/arrow.teo");
-	
+
 	for(size_t i = 0; i < MAX_GOLD_COINS_VISUALS; i++) {
-		
+
 		std::ostringstream oss;
-		
+
 		if(i == 0) {
 			oss << "graph/obj3d/interactive/items/jewelry/gold_coin/gold_coin.teo";
 		} else {
 			oss << "graph/obj3d/interactive/items/jewelry/gold_coin/gold_coin" << (i + 1) << ".teo";
 		}
-		
+
 		GoldCoinsObj[i] = loadObject(oss.str());
-		
+
 		oss.str(std::string());
-		
+
 		if(i == 0) {
 			oss << "graph/obj3d/interactive/items/jewelry/gold_coin/gold_coin[icon]";
 		} else {
 			oss << "graph/obj3d/interactive/items/jewelry/gold_coin/gold_coin" << (i + 1) << "[icon]";
 		}
-		
+
 		GoldCoinsTC[i] = TextureContainer::LoadUI(oss.str());
 	}
-	
+
 	ARX_PLAYER_LoadHeroAnimsAndMesh();
-	
+
 	GLOBAL_EERIETEXTUREFLAG_LOADSCENE_RELEASE = old;
-	
+
 	g_playerBook.stats.loadStrings();
-	
+
 	m_gameInitialized = true;
-	
+
 	return true;
 }
 
@@ -2425,13 +2644,13 @@ static void runDataFilesInstaller() {
 #endif
 
 bool ArxGame::addPaks() {
-	
+
 	arx_assert(!g_resources);
-	
+
 	g_resources = new PakReader;
-	
+
 	if(!addDefaultResources(g_resources)) {
-		
+
 		// Print the search path to the log
 		std::ostringstream oss;
 		oss << "Searched in these locations:\n";
@@ -2441,70 +2660,70 @@ bool ArxGame::addPaks() {
 		}
 		oss << "See " << url::help_install_data << " or `arx --list-dirs` for details.";
 		LogInfo << oss.str();
-		
+
 		// Try to launch the data file installer on non-Windows systems
 		#if ARX_PLATFORM != ARX_PLATFORM_WIN32 && !defined(ANDROID)
 		const char * question = "Install the Arx Fatalis data files now?";
 		logger::CriticalErrorDialog::setExitQuestion(question, runDataFilesInstaller);
 		#endif
-		
+
 		// Construct an informative error message about missing files
 		oss.str(std::string());
 		oss << "Could not load required data files!\n";
 		oss << "\nSee " << url::help_get_data << " for help.\n";
 		LogCritical << oss.str();
-		
+
 		return false;
 	}
-	
+
 	return true;
 }
 
 static void ReleaseSystemObjects() {
-	
+
 	if(entities.size() > 0 && entities.player() != nullptr) {
 		delete entities.player();
 		arx_assert(entities.size() > 0 && entities.player() == nullptr);
 	}
-	
+
 	eyeball.release();
 	ReleaseSpellModels();
-	
+
 	cameraobj = { };
 	markerobj = { };
 	arrowobj = { };
-	
+
 	drawDebugRelease();
-	
+
 	for(std::unique_ptr<EERIE_3DOBJ> & object : GoldCoinsObj) {
 		object = { };
 	}
-	
+
 }
 
 long EXITING = 0;
 
 void ArxGame::shutdown() {
-	
+
 	if(m_gameInitialized)
 		shutdownGame();
-	
+
 	Application::shutdown();
-	
+
 	LogInfo << "Clean shutdown";
 }
 
 
 void ArxGame::shutdownGame() {
-	
+
 	ARX_Menu_Resources_Release();
-	
+
 	mainApp->getWindow()->hide();
-	
+
 	Menu2_Close();
 	DanaeClearLevel();
 	TextureContainer::DeleteAll();
-	
+
 	cinematicDestroy();
 
 	config.save();
@@ -2513,90 +2732,90 @@ void ArxGame::shutdownGame() {
 	EXITING = 1;
 	TREATZONE_Clear();
 	ClearTileLights();
-	
+
 	spellDataRelease();
-	
+
 	g_particleManager.Clear();
-	
+
 	ARX_SOUND_Release();
-	
+
 	ARX_PATH_ReleaseAllPath();
-	
+
 	ReleaseSystemObjects();
-	
+
 	AnchorData_ClearAll();
-	
+
 	if(g_tiles) {
 		g_tiles->clear();
 		FreeRoomDistance();
 	}
-	
+
 	EERIE_ANIMMANAGER_ClearAll();
 
 	g_renderBatcher.reset();
-	
+
 	svar.clear();
-	
+
 	ARX_SCRIPT_Timer_ClearAll();
-	
+
 	notification_ClearAll();
 	ARX_Text_Close();
-	
+
 	gui::ReleaseNecklace();
-	
+
 	delete g_resources;
-	
+
 	ARX_Changelevel_CurGame_Clear();
-	
+
 	FreeSnapShot();
-	
+
 	ARX_INPUT_Release();
-	
+
 	if(getWindow()) {
 		EERIE_PATHFINDER_Release();
 		ARX_INPUT_Release();
 		ARX_SOUND_Release();
 	}
-	
+
 	ScriptEvent::shutdown();
-	
+
 }
 
 void ArxGame::onWindowGotFocus(const Window & /* window */) {
-	
+
 	if(GInput) {
 		GInput->reset();
 	}
-	
+
 	if(config.audio.muteOnFocusLost) {
 		ARXMenu_Options_Audio_SetMuted(false);
 	}
-	
+
 }
 
 void ArxGame::onWindowLostFocus(const Window & /* window */) {
-	
+
 	// TODO(option-control) add a config option for this
 	ARX_INTERFACE_setCombatMode(COMBAT_MODE_OFF);
 	TRUE_PLAYER_MOUSELOOK_ON = false;
 	PLAYER_MOUSELOOK_ON = false;
-	
+
 	// TODO(option-audio) add a config option to disable audio on focus loss
-	
+
 	if(config.audio.muteOnFocusLost) {
 		ARXMenu_Options_Audio_SetMuted(true);
 	}
-	
+
 }
 
 void ArxGame::onResizeWindow(const Window & window) {
-	
+
 	arx_assert(window.getSize() != Vec2i(0));
-	
+
 	// A new window size will require a new backbuffer
 	// size, so the 3D structures must be changed accordingly.
 	m_wasResized = true;
-	
+
 	if(window.isFullScreen()) {
 		if(config.video.mode.resolution == Vec2i(0)) {
 			LogInfo << "Using fullscreen desktop mode " << window.getDisplayMode();
@@ -2608,7 +2827,7 @@ void ArxGame::onResizeWindow(const Window & window) {
 		LogInfo << "Changed window size to " << window.getDisplayMode();
 		config.window.size = window.getSize();
 	}
-	
+
 }
 
 void ArxGame::onDestroyWindow(const Window & /* window */) {
@@ -2628,38 +2847,38 @@ void ArxGame::onDroppedFile(const Window & /* window */, const fs::path & path) 
  * \brief Message-processing loop. Idle time is used to render the scene.
  */
 void ArxGame::run() {
-	
+
 	while(m_RunLoop) {
-		
+
 		ARX_PROFILE(Main Loop);
-		
+
 		platform::reapZombies();
-		
+
 		if(m_MainWindow->isVisible() && !m_MainWindow->isMinimized() && m_bReady) {
 			doFrame();
 			m_MainWindow->processEvents(/*waitForEvent = */false);
 		} else {
 			m_MainWindow->processEvents(/*waitForEvent = */true);
 		}
-		
+
 	}
-	
+
 	benchmark::begin(benchmark::Shutdown);
-	
+
 }
 
 /*!
  * \brief Draws the scene.
  */
 void ArxGame::doFrame() {
-	
+
 	if(config.video.fpsLimit && !benchmark::isEnabled()) {
-		
+
 		PlatformInstant now = platform::getTime();
-		
+
 		PlatformDuration lastDuration = now - m_frameStart;
 		m_frameStart = now;
-		
+
 		int targetFps = config.video.fpsLimit;
 		if(targetFps <= 0) {
 			targetFps = m_MainWindow->getDisplayMode().refresh;
@@ -2672,18 +2891,18 @@ void ArxGame::doFrame() {
 			}
 		}
 		PlatformDuration targetDuration = std::chrono::microseconds(1s) / targetFps;
-		
+
 		PlatformDuration min = -targetDuration.value();
 		m_frameDelta = arx::clamp(m_frameDelta + targetDuration - lastDuration, min, targetDuration);
-		
+
 		if(m_frameDelta > 0) {
 			Thread::sleep(m_frameDelta);
 		}
-		
+
 	}
-	
+
 	ARX_PROFILE_FUNC();
-	
+
 	updateTime();
 
 #if defined(ARXVR_ANDROID_BUILD)
@@ -2732,7 +2951,7 @@ void ArxGame::doFrame() {
 		ARX_LoadGame(savegames[LOADQUEST_SLOT]);
 		LOADQUEST_SLOT = SavegameHandle();
 	}
-	
+
 	if(!g_saveToLoad.empty()) {
 		if(fs::is_directory(g_saveToLoad)) {
 			g_saveToLoad /= SAVEGAME_NAME;
@@ -2751,7 +2970,7 @@ void ArxGame::doFrame() {
 		}
 		g_saveToLoad.clear();
 	}
-	
+
 	if(GInput->actionNowPressed(CONTROLS_CUST_QUICKLOAD)) {
 		ARX_QuickLoad();
 	}
@@ -2759,21 +2978,21 @@ void ArxGame::doFrame() {
 #ifdef ANDROID   
     showOnScreenControls = ARXmenu.mode() != Mode_MainMenu;
 #endif
-    
+
 	if(cinematicIsStopped()
 	   && !cinematicBorder.isActive()
 	   && !BLOCK_PLAYER_CONTROLS
 	) {
-		
+
 		if(GInput->actionNowPressed(CONTROLS_CUST_QUICKSAVE) && ARXmenu.mode() == Mode_InGame) {
 			g_hudRoot.quickSaveIconGui.show();
 			GRenderer->getSnapshot(savegame_thumbnail, config.interface.thumbnailSize.x, config.interface.thumbnailSize.y);
 			ARX_QuickSave();
 			g_platformTime.updateFrame();
 		}
-		
+
 	}
-	
+
 	if(g_requestLevelInit) {
 		g_requestLevelInit = false;
 		levelInit();
@@ -2806,13 +3025,13 @@ void ArxGame::doFrame() {
 }
 
 void ArxGame::updateFirstPersonCamera() {
-	
+
 	arx_assert(entities.player());
-	
+
 	Entity * io = entities.player();
 	AnimLayer & layer1 = io->animlayer[1];
 	auto & alist = io->anims;
-	
+
 	if(player.m_bowAimRatio != 0.f
 	   && layer1.cur_anim != alist[ANIM_MISSILE_STRIKE_PART_1]
 	   && layer1.cur_anim != alist[ANIM_MISSILE_STRIKE_PART_2]
@@ -2822,7 +3041,7 @@ void ArxGame::updateFirstPersonCamera() {
 			player.m_bowAimRatio = 0;
 		}
 	}
-	
+
 	Vec3f targetPos = g_playerCamera.m_pos;
 	Anglef targetAngle = g_playerCamera.angle;
 	bool thirdPersonCamera = false;
@@ -2852,7 +3071,7 @@ void ArxGame::updateFirstPersonCamera() {
 				break;
 			}
 		}
-		
+
 		targetAngle = player.angle;
 		targetAngle.setPitch(targetAngle.getPitch() + 30.f);
 
@@ -2861,7 +3080,7 @@ void ArxGame::updateFirstPersonCamera() {
 		updatePlayerCameraPivot(io);
 
 	}
-	
+
 	if(thirdPersonCamera) {
 		g_playerCameraStablePos = g_playerCamera.m_pos = targetPos;
 		g_playerCamera.angle = targetAngle;
@@ -2886,7 +3105,7 @@ void ArxGame::updateFirstPersonCamera() {
 		g_playerCameraStablePos = g_playerCamera.m_pos;
 	}
 #endif
-	
+
 }
 
 void ArxGame::openVrMainMenu() {
@@ -2897,20 +3116,20 @@ void ArxGame::openVrMainMenu() {
 }
 
 void ArxGame::speechControlledCinematic() {
-	
+
 	Speech * speech = getCinematicSpeech();
 	if(!speech) {
 		return;
 	}
-	
+
 	arx_assert(speech->speaker);
-	
+
 	const CinematicSpeech & acs = speech->cine;
-	
+
 	float rtime = glm::clamp((g_gameTime.now() - speech->time_creation) / speech->duration, 0.f, 1.f);
-	
+
 	switch(acs.type) {
-		
+
 		case ARX_CINE_SPEECH_KEEP: {
 			arx_assert(isallfinite(acs.pos1));
 			g_playerCamera.m_pos = acs.pos1;
@@ -2920,76 +3139,76 @@ void ArxGame::speechControlledCinematic() {
 			EXTERNALVIEW = true;
 			break;
 		}
-		
+
 		case ARX_CINE_SPEECH_ZOOM: {
-			
+
 			arx_assert(isallfinite(acs.pos1));
-			
+
 			// Need to compute current values
 			float alpha = glm::mix(acs.startangle.getPitch(), acs.endangle.getPitch(), rtime);
 			float beta = glm::mix(acs.startangle.getYaw(), acs.endangle.getYaw(), rtime);
 			float distance = glm::mix(acs.startpos, acs.endpos, rtime);
 			Vec3f targetpos = acs.pos1;
-			
+
 			Vec3f vector = angleToVectorXZ(speech->speaker->angle.getYaw() + beta);
 			vector.y = std::sin(glm::radians(MAKEANGLE(speech->speaker->angle.getPitch() + alpha)));
 			g_playerCamera.m_pos = targetpos + vector * distance;
-			
+
 			g_playerCamera.lookAt(targetpos);
-			
+
 			EXTERNALVIEW = true;
-			
+
 			break;
 		}
-		
+
 		case ARX_CINE_SPEECH_SIDE_LEFT:
 		case ARX_CINE_SPEECH_SIDE: {
-			
+
 			if(entities.get(acs.ionum)) {
-				
+
 				arx_assert(isallfinite(acs.pos1));
 				arx_assert(isallfinite(acs.pos2));
-				
+
 				const Vec3f & from = acs.pos1;
 				const Vec3f & to = acs.pos2;
-				
+
 				Vec3f vect = glm::normalize(to - from);
 				Vec3f vect2 = VRotateY(vect, (acs.type == ARX_CINE_SPEECH_SIDE_LEFT) ? -90.f : 90.f);
-				
+
 				float distance = glm::mix(acs.m_startdist, acs.m_enddist, rtime);
 				float _dist = glm::distance(from, to);
 				Vec3f tfrom = from + vect * acs.startpos * (1.0f / 100) * _dist;
 				Vec3f tto = from + vect * acs.endpos * (1.0f / 100) * _dist;
 				Vec3f targetpos = glm::mix(tfrom, tto, rtime) + Vec3f(0.f, acs.m_heightModifier, 0.f);
-				
+
 				g_playerCamera.m_pos = targetpos + vect2 * distance + Vec3f(0.f, acs.m_heightModifier, 0.f);
-				
+
 				g_playerCamera.lookAt(targetpos);
-				
+
 				EXTERNALVIEW = true;
-				
+
 			}
-			
+
 			break;
 		}
-		
+
 		case ARX_CINE_SPEECH_CCCLISTENER_R:
 		case ARX_CINE_SPEECH_CCCLISTENER_L:
 		case ARX_CINE_SPEECH_CCCTALKER_R:
 		case ARX_CINE_SPEECH_CCCTALKER_L: {
-			
+
 			// Need to compute current values
 			if(entities.get(acs.ionum)) {
-				
+
 				arx_assert(isallfinite(acs.pos1));
 				arx_assert(isallfinite(acs.pos2));
-				
+
 				Vec3f sourcepos = acs.pos1;
 				Vec3f targetpos = acs.pos2;
 				if(acs.type == ARX_CINE_SPEECH_CCCLISTENER_L || acs.type == ARX_CINE_SPEECH_CCCLISTENER_R) {
 					std::swap(sourcepos, targetpos);
 				}
-				
+
 				float distance = glm::mix(acs.startpos, acs.endpos, rtime) * 0.01f;
 				Vec3f vect = sourcepos - targetpos;
 				Vec3f vect2 = VRotateY(vect, 90.f);
@@ -3000,62 +3219,62 @@ void ArxGame::speechControlledCinematic() {
 				if(acs.type == ARX_CINE_SPEECH_CCCLISTENER_R || acs.type == ARX_CINE_SPEECH_CCCTALKER_R) {
 					vect2 = -vect2;
 				}
-				
+
 				g_playerCamera.m_pos = vect + targetpos + vect2;
-				
+
 				g_playerCamera.lookAt(targetpos);
-				
+
 				EXTERNALVIEW = true;
-				
+
 			}
-			
+
 			break;
 		}
-		
+
 		case ARX_CINE_SPEECH_NONE: arx_unreachable();
-		
+
 	}
-	
+
 	LASTCAMPOS = g_playerCamera.m_pos;
 	LASTCAMANGLE = g_playerCamera.angle;
-	
+
 }
 
 void ArxGame::handlePlayerDeath() {
-	
+
 	if(player.lifePool.current <= 0) {
-		
+
 		player.DeadTime += g_gameTime.lastFrameDuration();
 		float mdist = glm::abs(player.physics.cyl.height) - 60;
-		
+
 		float startDistance = 40.f;
 
 		GameDuration startTime = 2s;
 		GameDuration endTime = 7s;
 
 		float DeadCameraDistance = startDistance + (mdist - startDistance) * ((player.DeadTime - startTime) / (endTime - startTime));
-		
+
 		VertexId id  = entities.player()->obj->fastaccess.view_attach;
 		Vec3f targetpos = id ? entities.player()->obj->vertexWorldPositions[id].v : player.pos;
-		
+
 		VertexId id2 = getNamedVertex(entities.player()->obj, "chest2leggings");
 		Vec3f chest = id2 ? entities.player()->obj->vertexWorldPositions[id2].v : targetpos;
-		
+
 		g_playerCamera.m_pos = chest - Vec3f(0.f, DeadCameraDistance, 0.f);
-		
+
 		g_playerCamera.lookAt(targetpos);
-		
+
 		EXTERNALVIEW = true;
 		BLOCK_PLAYER_CONTROLS = true;
-		
+
 	}
-	
+
 }
 
 void ArxGame::updateActiveCamera() {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
 	Camera * cam = nullptr;
 	if(g_cameraEntity) {
 		cam = &g_cameraEntity->_camdata->cam;
@@ -3066,25 +3285,25 @@ void ArxGame::updateActiveCamera() {
 	} else {
 		cam = &g_playerCamera;
 	}
-	
+
 	ManageQuakeFX(cam);
-	
+
 	PrepareCamera(cam, g_size);
-	
+
 }
 
 void ArxGame::updateTime() {
-	
+
 	g_platformTime.updateFrame();
-	
+
 	if(g_requestLevelInit) {
 		g_platformTime.overrideFrameDuration(0);
 	}
-	
+
 	g_gameTime.update(g_platformTime.lastFrameDuration());
-	
+
 	g_framedelay = toMsf(g_gameTime.lastFrameDuration());
-	
+
 }
 
 void ArxGame::updateInput() {
@@ -3118,9 +3337,9 @@ void ArxGame::updateInput() {
 	// OpenXR aim point, so sparse fixed objects can use the current fallback ray.
 	updateVrPhysicalInteraction();
 #endif
-	
+
 	if(ARXmenu.mode() == Mode_InGame) {
-		
+
 		// Handle double clicks.
 		const ActionKey & button = config.actions[CONTROLS_CUST_ACTION];
 		if((button.key[0] != ActionKey::UNUSED && (button.key[0] & Mouse::ButtonBase) && GInput->getMouseButtonDoubleClick(button.key[0]))
@@ -3128,7 +3347,7 @@ void ArxGame::updateInput() {
 			EERIEMouseButton |= 4;
 			EERIEMouseButton &= ~1;
 		}
-		
+
 		if(GInput->actionNowPressed(CONTROLS_CUST_ACTION)) {
 #if defined(ARXVR_ANDROID_BUILD)
 			// Keep an evidence trail for the real engine interaction path. This is
@@ -3152,26 +3371,26 @@ void ArxGame::updateInput() {
 			EERIEMouseButton &= ~1;
 			EERIEMouseButton &= ~4;
 		}
-		
+
 		if(GInput->actionNowPressed(CONTROLS_CUST_USE)) {
 			EERIEMouseButton |= 2;
 		}
 		if(GInput->actionNowReleased(CONTROLS_CUST_USE)) {
 			EERIEMouseButton &= ~2;
 		}
-		
+
 	} else {
-		
+
 		EERIEMouseButton = 0;
-		
+
 		if(GInput->getMouseButtonRepeat(Mouse::Button_0)) {
 			EERIEMouseButton |= 1;
 		}
-		
+
 		if(GInput->getMouseButtonRepeat(Mouse::Button_1)) {
 			EERIEMouseButton |= 2;
 		}
-		
+
 	}
 
 	if(GInput->actionNowPressed(CONTROLS_CUST_TOGGLE_FULLSCREEN)) {
@@ -3183,7 +3402,7 @@ void ArxGame::updateInput() {
 		EERIE_PORTAL_ReleaseOnlyVertexBuffer();
 		ComputePortalVertexBuffer();
 		*/
-		
+
 		profiler::flush();
 	}
 
@@ -3194,7 +3413,7 @@ void ArxGame::updateInput() {
 		if(g_debugInfo == InfoPanelEnumSize)
 			g_debugInfo = InfoPanelNone;
 	}
-	
+
 	if(GInput->isKeyPressedNowPressed(Keyboard::Key_F10)) {
 		GetSnapShot();
 	}
@@ -3202,12 +3421,12 @@ void ArxGame::updateInput() {
 	if(GInput->actionNowPressed(CONTROLS_CUST_DEBUG)) {
 		drawDebugCycleViews();
 	}
-	
+
 	g_console.update();
-	
+
 #ifdef ARX_DEBUG
 	debug_keysUpdate();
-	
+
 	if(GInput->isKeyPressedNowPressed(Keyboard::Key_Pause)) {
 		if(g_gameTime.isPaused() & GameTime::PauseUser) {
 			g_gameTime.resume(GameTime::PauseUser);
@@ -3216,9 +3435,9 @@ void ArxGame::updateInput() {
 		}
 	}
 #endif
-	
+
 	m_MainWindow->allowScreensaver(!m_MainWindow->isFullScreen() && ARXmenu.mode() == Mode_MainMenu);
-	
+
 }
 
 extern int iHighLight;
@@ -3226,15 +3445,15 @@ extern int iHighLight;
 void ArxGame::updateLevel() {
 
 	arx_assert(entities.player());
-	
+
 	ARX_PROFILE_FUNC();
 
 #if defined(ARXVR_ANDROID_BUILD)
 	const auto vrUpdateStart = std::chrono::steady_clock::now();
 #endif
-	
+
 	g_renderBatcher.clear();
-	
+
 	if(!player.m_paralysed) {
 		manageEditorControls();
 
@@ -3242,16 +3461,16 @@ void ArxGame::updateLevel() {
 			managePlayerControls();
 		}
 	}
-	
+
 	{
 		ARX_PROFILE("Entity preprocessing");
-		
+
 		for(Entity & entity : entities) {
-			
+
 			if(entity.ignition > 0.f || (entity.ioflags & IO_FIERY)) {
 				ManageIgnition(entity);
 			}
-			
+
 			// Highlight entity
 			#if defined(ARXVR_ANDROID_BUILD)
 			Entity * vrTarget = currentVrInteractionTarget();
@@ -3264,11 +3483,11 @@ void ArxGame::updateLevel() {
 			} else {
 				entity.highlightColor = Color3f::black;
 			}
-			
+
 			Cedric_ApplyLightingFirstPartRefactor(entity);
-			
+
 			float speedModifier = 0.f;
-			
+
 			if(entity == *entities.player()) {
 				if(cur_mr == CHEAT_ENABLED) {
 					speedModifier += 0.5f;
@@ -3277,15 +3496,15 @@ void ArxGame::updateLevel() {
 					speedModifier += 1.5f;
 				}
 			}
-			
+
 			speedModifier += spells.getTotalSpellCasterLevelOnTarget(entity.index(), SPELL_SPEED) * 0.1f;
 			speedModifier -= spells.getTotalSpellCasterLevelOnTarget(entity.index(), SPELL_SLOW_DOWN) * 0.05f;
 			entity.speed_modif = speedModifier;
-			
+
 		}
-		
+
 	}
-	
+
 	ARX_PLAYER_Manage_Movement();
 
 	if(config.camera.thirdPerson) {
@@ -3300,11 +3519,11 @@ void ArxGame::updateLevel() {
 
 	if(entities.player()->animlayer[0].cur_anim) {
 		ManageNONCombatModeAnimations();
-		
+
 		{
 			AnimationDuration framedelay = toAnimationDuration(g_platformTime.lastFrameDuration());
 			Entity * entity = entities.player();
-			
+
 			EERIEDrawAnimQuatUpdate(entity->obj,
 			                        entity->animlayer.data(),
 			                        entity->angle,
@@ -3313,7 +3532,7 @@ void ArxGame::updateLevel() {
 			                        entity,
 			                        true);
 		}
-		
+
 		if((player.Interface & INTER_COMBATMODE) && entities.player()->animlayer[1].cur_anim)
 			ManageCombatModeAnimations();
 
@@ -3326,13 +3545,13 @@ void ArxGame::updateLevel() {
 #if defined(ARXVR_ANDROID_BUILD)
 	const auto vrUpdatePlayer = std::chrono::steady_clock::now();
 #endif
-	
+
 	ARX_SCRIPT_Timer_Check();
 
 	speechControlledCinematic();
 
 	handlePlayerDeath();
-	
+
 	UpdateCameras();
 
 	ARX_PLAYER_FrameCheck(g_platformTime.lastFrameDuration());
@@ -3340,18 +3559,18 @@ void ArxGame::updateLevel() {
 	updateActiveCamera();
 
 	ARX_GLOBALMODS_Apply();
-	
+
 	// Set Listener Position
 	{
 		std::pair<Vec3f, Vec3f> frontUp = angleToFrontUpVec(g_camera->angle);
 		ARX_SOUND_SetListener(g_camera->m_pos, frontUp.first, frontUp.second);
 	}
-	
+
 	// Check For Hiding/unHiding Player Gore
 	if(EXTERNALVIEW || player.lifePool.current <= 0) {
 		ARX_INTERACTIVE_Show_Hide_1st(entities.player(), false);
 	}
-	
+
 	if(!EXTERNALVIEW) {
 		ARX_INTERACTIVE_Show_Hide_1st(entities.player(), true);
 	}
@@ -3359,16 +3578,16 @@ void ArxGame::updateLevel() {
 #if defined(ARXVR_ANDROID_BUILD)
 	const auto vrUpdateScripts = std::chrono::steady_clock::now();
 #endif
-	
+
 	PrepareIOTreatZone();
 	ARX_PHYSICS_Apply();
-	
+
 	PrecalcIOLighting(g_camera->m_pos, g_camera->cdepth * 0.6f);
 
 #if defined(ARXVR_ANDROID_BUILD)
 	const auto vrUpdatePhysicsLighting = std::chrono::steady_clock::now();
 #endif
-	
+
 	ARX_SCENE_Update();
 
 #if defined(ARXVR_ANDROID_BUILD)
@@ -3396,7 +3615,7 @@ void ArxGame::updateLevel() {
 				static PlatformDuration runeDrawPointElapsed = 0;
 				if(!config.input.useAltRuneRecognition) {
 					runeDrawPointElapsed += g_platformTime.lastFrameDuration();
-					
+
 					if(runeDrawPointElapsed >= runeDrawPointInterval) {
 						ARX_SPELLS_AddPoint(DANAEMouse);
 						while(runeDrawPointElapsed >= runeDrawPointInterval) {
@@ -3416,29 +3635,29 @@ void ArxGame::updateLevel() {
 	}
 
 	ARX_SPELLS_Precast_Check();
-	
+
 	if(ARXmenu.mode() == Mode_InGame) {
 		ARX_SPELLS_ManageMagic();
 	}
-	
+
 	ARX_SPELLS_UpdateSymbolDraw();
 
 	ManageTorch();
-	
+
 	{
-		
+
 		g_playerCamera.setFov(glm::radians(config.video.fov));
-		
+
 		Spell * spell = spells.getSpellByCaster(EntityHandle_Player, SPELL_MAGIC_SIGHT);
 		if(spell) {
 			GameDuration duration = g_gameTime.now() - spell->m_timcreation;
 			g_playerCamera.focal -= 30.f * glm::clamp(duration / 500ms, 0.f, 1.f);
 		}
-		
+
 		g_playerCamera.focal += 177.5f * player.m_bowAimRatio;
-		
+
 	}
-	
+
 	ARX_INTERACTIVE_DestroyIOdelayedExecute();
 
 #if defined(ARXVR_ANDROID_BUILD)
@@ -3473,7 +3692,7 @@ void ArxGame::updateLevel() {
 }
 
 void ArxGame::renderLevel(bool secondaryVrEye) {
-	
+
 	ARX_PROFILE_FUNC();
 
 #if defined(ARXVR_ANDROID_BUILD)
@@ -3482,17 +3701,17 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 	                           && !(player.Interface & INTER_PLAYERBOOK)
 	                           && !cinematicBorder.isActive();
 #endif
-	
+
 	// Clear screen & Z buffers
 	GRenderer->Clear(Renderer::ColorBuffer | Renderer::DepthBuffer, g_fogColor);
-	
+
 	cinematicBorder.render();
-	
+
 	GRenderer->SetAntialiasing(true);
-	
+
 	GRenderer->SetFogParams(fZFogStart * g_camera->cdepth, fZFogEnd * g_camera->cdepth);
 	GRenderer->SetFogColor(g_fogColor);
-	
+
 	ARX_SCENE_Render();
 
 #if defined(ARXVR_ANDROID_BUILD)
@@ -3505,7 +3724,7 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 	}
 	const auto vrRenderScene = std::chrono::steady_clock::now();
 #endif
-	
+
 	drawDebugRender();
 
 	// Begin Particles
@@ -3520,12 +3739,12 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 #if defined(ARXVR_ANDROID_BUILD)
 	const auto vrRenderParticles = std::chrono::steady_clock::now();
 #endif
-	
+
 	if(!secondaryVrEye) {
 		ARX_PARTICLES_Update();
 		ParticleSparkUpdate();
 	}
-	
+
 	// End Particles
 
 	// Renders Magical Flares
@@ -3546,7 +3765,7 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 	if(player.m_improve) {
 		DrawImproveVisionInterface();
 	}
-	
+
 	eyeball.drawMagicSightInterface();
 
 	if(player.m_paralysed) {
@@ -3642,14 +3861,14 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 		return;
 	}
 #endif
-	
+
 	GRenderer->SetAntialiasing(false);
 
 	if(!secondaryVrEye) {
 		updateLightFlares();
 	}
 	renderLightFlares();
-	
+
 	// Manage Death visual & Launch menu...
 	if(!secondaryVrEye) {
 		ARX_PLAYER_Manage_Death();
@@ -3657,21 +3876,21 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 
 	// INTERFACE
 	g_renderBatcher.clear();
-	
+
 	// Draw game interface if needed
 	if(ARXmenu.mode() == Mode_InGame && !cinematicBorder.isActive()) {
-	
+
 		UseTextureState textureState(TextureStage::FilterLinear, TextureStage::WrapClamp);
-		
+
 		ARX_INTERFACE_NoteManage();
 		g_hudRoot.draw();
-		
+
 		if(!secondaryVrEye
 		   && (player.Interface & INTER_PLAYERBOOK) && !(player.Interface & INTER_COMBATMODE)) {
 			ARX_MAGICAL_FLARES_Update();
 			g_renderBatcher.render();
 		}
-		
+
 	}
 
 	GRenderer->Clear(Renderer::DepthBuffer);
@@ -3691,7 +3910,7 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 		}
 		pTextManage->Render();
 	}
-	
+
 	if(SHOW_INGAME_MINIMAP &&
 	   cinematicIsStopped() &&
 	   !cinematicBorder.isActive() &&
@@ -3703,16 +3922,16 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 #if defined(ARXVR_ANDROID_BUILD)
 	renderVrInteractionPrompt();
 #endif
-	
+
 	ARX_INTERFACE_RenderCursor(false);
-	
+
 	CheatDrawText();
 
 	if(FADEDIR)
 		ManageFade();
-	
+
 	GRenderer->SetScissor(Rect());
-	
+
 	ARX_SPEECH_Update(!secondaryVrEye);
 
 #if defined(ARXVR_ANDROID_BUILD)
@@ -3740,32 +3959,32 @@ void ArxGame::renderLevel(bool secondaryVrEye) {
 		vrRenderSamples = 0;
 	}
 #endif
-	
+
 }
 
 void ArxGame::render() {
-	
+
 	ARX_PROFILE_FUNC();
-	
+
 	SetActiveCamera(&g_playerCamera);
-	
+
 	// Update Various Player Infos for this frame.
 	ARX_PLAYER_Frame_Update();
-	
+
 	PULSATE = timeWaveSin(g_gameTime.now(), 1600ms * glm::pi<float>());
 	EERIEDrawnPolys = 0;
-	
+
 	// Checks for Keyboard & Moulinex
 	{
 		g_cursorOverBook = false;
-		
+
 		if(ARXmenu.mode() == Mode_InGame) { // Playing Game
 			// Checks Clicks in Book Interface
 			if(ARX_INTERFACE_MouseInBook()) {
 				g_cursorOverBook = true;
 			}
 		}
-		
+
 		if((player.Interface & INTER_COMBATMODE) || PLAYER_MOUSELOOK_ON) {
 			FlyingOverIO = nullptr; // Avoid to check with those modes
 		} else {
@@ -3787,23 +4006,23 @@ void ArxGame::render() {
 			FlyingOverIO = vrTarget;
 		}
 #endif
-		
+
 		if(!player.m_paralysed || ARXmenu.mode() != Mode_InGame) {
 			manageKeyMouse();
 		}
 	}
-	
+
 	if(CheckInPoly(player.pos)) {
 		LastValidPlayerPos = player.pos;
 	}
-	
+
 	// Updates Externalview
 	EXTERNALVIEW = false;
-	
+
 	if(ARXmenu.mode() != Mode_MainMenu) {
 		Menu2_Close();
 	}
-	
+
 	if(ARXmenu.mode() != Mode_InGame) {
 		benchmark::begin(benchmark::Menu);
 		ARX_Menu_Render();
@@ -3820,7 +4039,7 @@ void ArxGame::render() {
 		}
 		#endif
 	}
-	
+
 	if(g_debugInfo != InfoPanelNone) {
 		switch(g_debugInfo) {
 		case InfoPanelFramerate: {
@@ -3847,13 +4066,13 @@ void ArxGame::render() {
 		default: break;
 		}
 	}
-	
+
 #ifdef ARX_DEBUG
 	ShowDebugToggles();
 #endif
-	
+
 	g_console.draw();
-	
+
 	if(ARXmenu.mode() == Mode_InGame) {
 		ARX_SCRIPT_AllowInterScriptExec();
 		ARX_SCRIPT_EventStackExecute();
@@ -3865,62 +4084,62 @@ void ArxGame::render() {
 	}
 
 	LastMouseClick = EERIEMouseButton;
-	
+
 	gldebug::endFrame();
 }
 
 void ArxGame::onRendererInit(Renderer & renderer) {
-	
+
 	arx_assert(GRenderer == nullptr);
-	
+
 	GRenderer = &renderer;
-	
+
 	arx_assert_msg(renderer.getTextureStageCount() >= 3, "not enough texture units");
 	arx_assert(m_MainWindow);
-	
+
 	renderer.Clear(Renderer::ColorBuffer);
 	m_MainWindow->showFrame();
-	
+
 	// Restore All Textures RenderState
 	renderer.RestoreAllTextures();
 
 	ARX_PLAYER_Restore_Skin();
-	
+
 	// Fog
 	float fogEnd = 0.48f;
 	float fogStart = fogEnd * 0.65f;
 	renderer.SetFogParams(fogStart, fogEnd);
 	renderer.SetFogColor(g_fogColor);
-	
+
 	ComputePortalVertexBuffer();
 	std::unique_ptr<VertexBuffer<SMY_VERTEX3>> vb3 = renderer.createVertexBuffer3(4000, Renderer::Stream);
 	pDynamicVertexBuffer = new CircularVertexBuffer<SMY_VERTEX3>(std::move(vb3));
-	
+
 	size_t size = (config.video.bufferSize < 1) ? 32 * 1024 : config.video.bufferSize * 1024;
 	std::unique_ptr<VertexBuffer<TexturedVertex>> vb = renderer.createVertexBufferTL(size, Renderer::Stream);
 	pDynamicVertexBuffer_TLVERTEX = new CircularVertexBuffer<TexturedVertex>(std::move(vb));
-	
+
 	MenuReInitAll();
-	
+
 	// The app is ready to go
 	m_bReady = true;
 }
 
 void ArxGame::onRendererShutdown(Renderer & renderer) {
-	
+
 	if(GRenderer != &renderer) {
 		// onRendererInit() failed
 		return;
 	}
-	
+
 	m_bReady = false;
-	
+
 	GRenderer->ReleaseAllTextures();
 
 	delete pDynamicVertexBuffer_TLVERTEX, pDynamicVertexBuffer_TLVERTEX = nullptr;
 	delete pDynamicVertexBuffer, pDynamicVertexBuffer = nullptr;
-	
+
 	EERIE_PORTAL_ReleaseOnlyVertexBuffer();
-	
+
 	GRenderer = nullptr;
 }
