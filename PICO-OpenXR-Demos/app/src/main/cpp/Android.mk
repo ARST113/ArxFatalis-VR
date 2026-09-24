@@ -108,7 +108,7 @@ LOCAL_SRC_FILES := main.cpp \
 
 LOCAL_LDLIBS := -llog -landroid -lGLESv3 -lEGL -lmediandk -laaudio
 LOCAL_STATIC_LIBRARIES := android_native_app_glue imgui freetype
-LOCAL_SHARED_LIBRARIES := openxr_loader assimp imgui freetype
+LOCAL_SHARED_LIBRARIES := openxr_loader assimp
 include $(BUILD_SHARED_LIBRARY)
 
 $(call import-module, android/native_app_glue)
