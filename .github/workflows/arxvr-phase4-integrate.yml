@@ -21,35 +21,88 @@ jobs:
         with:
           ref: vr-foundation-phase1
           fetch-depth: 0
+
       - name: Validate integration generator
         run: python3 -m py_compile tools/arxvr_apply_phase4_live_integration_v2.py
+
       - name: Restore pre-integration ArxGame and apply guarded patch
         shell: bash
         run: |
           set -euxo pipefail
           BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
-          git show "${BASE_COMMIT}:${SOURCE}" > "${SOURCE}"
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("ArxAndroid/src/core/ArxGame.cpp")
-          path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
-          PY
-          python3 tools/arxvr_apply_phase4_live_integration_v2.py
-          python3 - <<'PY'
-          from pathlib import Path
-          import subprocess
+          BASE_BLOB=/tmp/arxgame-pre-phase4.cpp
 
+          # Preserve the historical blob byte-for-byte. ArxGame.cpp contains a
+          # mixture of line endings, so normalising the whole file would turn a
+          # small semantic patch into thousands of unrelated changed lines.
+          git show "${BASE_COMMIT}:${SOURCE}" > "${BASE_BLOB}"
+          cp "${BASE_BLOB}" "${SOURCE}"
+
+          # The deterministic generator intentionally operates on LF text.
+          python3 - <<'PY'
+          from pathlib import Path
           path = Path("ArxAndroid/src/core/ArxGame.cpp")
-          base = subprocess.check_output([
-              "git", "show",
-              "0e52d4cde5b228fcfc23f7730bb22b9919bd173d:ArxAndroid/src/core/ArxGame.cpp"
-          ])
-          data = path.read_bytes().replace(b"\r\n", b"\n")
-          if b"\r\n" in base:
-              data = data.replace(b"\n", b"\r\n")
+          data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
           path.write_bytes(data)
           PY
+
+          python3 tools/arxvr_apply_phase4_live_integration_v2.py
+
+          # Reconstruct the generated source while retaining the exact original
+          # bytes for every unchanged logical line. Only inserted/replaced lines
+          # receive the local line-ending convention of their surrounding block.
+          python3 - <<'PY'
+          from pathlib import Path
+          import difflib
+
+          source = Path("ArxAndroid/src/core/ArxGame.cpp")
+          base_path = Path("/tmp/arxgame-pre-phase4.cpp")
+
+          base_raw_lines = base_path.read_bytes().splitlines(keepends=True)
+          generated_lines = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n").splitlines()
+
+          def content(line: bytes) -> bytes:
+              if line.endswith(b"\r\n"):
+                  return line[:-2]
+              if line.endswith(b"\n") or line.endswith(b"\r"):
+                  return line[:-1]
+              return line
+
+          def ending(line: bytes) -> bytes:
+              if line.endswith(b"\r\n"):
+                  return b"\r\n"
+              if line.endswith(b"\n"):
+                  return b"\n"
+              if line.endswith(b"\r"):
+                  return b"\r"
+              return b"\n"
+
+          base_lines = [content(line) for line in base_raw_lines]
+          matcher = difflib.SequenceMatcher(None, base_lines, generated_lines, autojunk=False)
+          output = []
+
+          def nearby_eol(index: int) -> bytes:
+              if 0 <= index < len(base_raw_lines):
+                  return ending(base_raw_lines[index])
+              if index > 0 and index - 1 < len(base_raw_lines):
+                  return ending(base_raw_lines[index - 1])
+              return b"\n"
+
+          for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+              if tag == "equal":
+                  output.extend(base_raw_lines[i1:i2])
+                  continue
+              if tag == "delete":
+                  continue
+
+              eol = nearby_eol(i1)
+              for line in generated_lines[j1:j2]:
+                  output.append(line + eol)
+
+          source.write_bytes(b"".join(output))
+          PY
+
       - name: Validate generated C++ source
         shell: bash
         run: |
@@ -66,40 +119,39 @@ jobs:
             echo "Quoted generator fragment found in generated C++" >&2
             exit 1
           fi
-      - name: Require integration diff
+
+      - name: Stage and audit live integration
         shell: bash
         run: |
           set -euxo pipefail
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
           ! git diff --quiet -- "$SOURCE"
-          git diff --stat -- "$SOURCE"
-      - name: Stage generated ArxGame
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git add ArxAndroid/src/core/ArxGame.cpp
-      - name: Report staged whitespace diagnostics
-        shell: bash
-        run: |
-          set -euxo pipefail
-          # Preserve diagnostics in the Actions log, but do not block the repair
-          # commit on historical whitespace/CRLF style. The clean compiler/build
-          # and post-commit diff audit are the authoritative correctness gates.
-          git -c core.whitespace=cr-at-eol diff --cached --check || true
-      - name: Audit staged scope
-        shell: bash
-        run: |
-          set -euxo pipefail
-          SOURCE=ArxAndroid/src/core/ArxGame.cpp
+          git add "$SOURCE"
+
+          # CR bytes that terminate historical CRLF lines are valid; ordinary
+          # trailing spaces/tabs introduced by the generator remain failures.
+          git -c core.whitespace=cr-at-eol diff --cached --check
+
           test "$(git diff --cached --name-only | wc -l)" -eq 1
           git diff --cached --name-only | grep -Fx "$SOURCE"
+
+          # Catch another line-ending catastrophe before it can be committed.
+          read ADDED DELETED _ < <(git diff --cached --numstat -- "$SOURCE")
+          test "$ADDED" != "-"
+          test "$DELETED" != "-"
+          CHANGED=$((ADDED + DELETED))
+          echo "Phase 4 live integration diff: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+          test "$CHANGED" -le 700
+          git diff --cached --stat -- "$SOURCE"
+
       - name: Commit repaired live integration
         shell: bash
         run: |
           set -euxo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Repair Phase 4 live combat integration"
+          git commit -m "Repair Phase 4 live combat integration without EOL churn"
+
       - name: Push repaired live integration
         shell: bash
         run: |
