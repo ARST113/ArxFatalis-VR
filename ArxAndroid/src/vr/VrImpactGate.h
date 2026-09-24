@@ -100,6 +100,15 @@ public:
 		return canImpact() && m_classifier.consumeStrike(m_profile);
 	}
 
+	// Change the qualification profile when one physical hand changes semantic
+	// source (for example fist -> held object) without erasing a cooldown that
+	// was established by the previous source. Motion metrics cannot be compared
+	// across profiles, so the current path is always discarded.
+	void transitionProfile(const VrStrikeProfile & profile) {
+		m_profile = profile;
+		m_classifier.resetHistory();
+	}
+
 	// End the current semantic gesture/source while keeping cooldown state.
 	// This is suitable for release/drop/holster transitions.
 	void resetGesture() {
