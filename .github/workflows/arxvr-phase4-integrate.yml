@@ -12,6 +12,7 @@ on:
       - 'tools/arxvr_apply_phase5_live_defense.py'
       - 'tools/arxvr_apply_phase5_multistrike_latches.py'
       - 'tools/arxvr_apply_phase7_rune_runtime.py'
+      - 'tools/arxvr_apply_phase7_spell_aim.py'
       - '.github/workflows/arxvr-phase4-integrate.yml'
 
 permissions:
@@ -37,6 +38,7 @@ jobs:
           python3 -m py_compile tools/arxvr_apply_phase5_live_defense.py
           python3 -m py_compile tools/arxvr_apply_phase5_multistrike_latches.py
           python3 -m py_compile tools/arxvr_apply_phase7_rune_runtime.py
+          python3 -m py_compile tools/arxvr_apply_phase7_spell_aim.py
 
       - name: Restore pre-integration ArxGame and apply guarded patches
         shell: bash
@@ -67,10 +69,14 @@ jobs:
           python3 tools/arxvr_apply_phase5_live_defense.py
           python3 tools/arxvr_apply_phase5_multistrike_latches.py
           python3 tools/arxvr_apply_phase7_rune_runtime.py
+          # Spell aim is part of the same canonical generated live integration.
+          # Keeping it here prevents a later Phase 4/5 regeneration from
+          # silently stripping the casting-hand publisher out of ArxGame.cpp.
+          python3 tools/arxvr_apply_phase7_spell_aim.py
 
           # Reconstruct the generated ArxGame source while retaining the exact
-          # original bytes for every unchanged logical line. Equipment.cpp is
-          # patched byte-for-byte by the live-defense generator itself.
+          # original bytes for every unchanged logical line. Equipment.cpp and
+          # SpellsLvl01.cpp are patched byte-for-byte by their guarded generators.
           python3 - <<'PY'
           from pathlib import Path
           import difflib
@@ -129,8 +135,10 @@ jobs:
           GAME=ArxAndroid/src/core/ArxGame.cpp
           EQUIP=ArxAndroid/src/game/Equipment.cpp
           RUNTIME=ArxAndroid/src/vr/VrDefenseRuntime.h
+          SPELL=ArxAndroid/src/game/magic/spells/SpellsLvl01.cpp
           grep -F '#include "vr/VrInteractionSystem.h"' "$GAME"
           grep -F '#include "vr/VrRuneRuntime.h"' "$GAME"
+          grep -F '#include "vr/VrSpellAim.h"' "$GAME"
           grep -F '#include "game/magic/SpellRecognition.h"' "$GAME"
           grep -F '#include "vr/VrWeaponContact.h"' "$GAME"
           grep -F '#include "vr/VrWeaponSystem.h"' "$GAME"
@@ -157,6 +165,8 @@ jobs:
           grep -F 'SpellSymbol != g_vrRuneSymbolsBefore' "$GAME"
           grep -F 'VrHapticEvent::RuneAccepted' "$GAME"
           grep -F 'VrHapticEvent::RuneRejected' "$GAME"
+          grep -F 'arxvr::vrSpellAimService().clear();' "$GAME"
+          grep -F 'arxvr::vrSpellAimService().update(vrSpellAimSample);' "$GAME"
           grep -F '#include "vr/VrDefenseRuntime.h"' "$EQUIP"
           grep -F 'vrHaveIncomingWeapon = arxvr::vrDefenseRuntime().sampleIncomingWeapon' "$EQUIP"
           grep -F 'vrDefense.defenseLatched(' "$EQUIP"
@@ -167,6 +177,12 @@ jobs:
           grep -F 'std::array<DefenseLatch, 8> m_latches{};' "$RUNTIME"
           grep -F 'for(const DefenseLatch & latch : m_latches)' "$RUNTIME"
           grep -F 'DefenseLatch * target = nullptr;' "$RUNTIME"
+          grep -F '#include "vr/VrSpellAim.h"' "$SPELL"
+          grep -F 'arxvr::vrSpellAimService().ray()' "$SPELL"
+          grep -F 'unitVectorToAngle(vrHandDirection)' "$SPELL"
+          grep -F 'vrPhysicalLaunchOffset' "$SPELL"
+          grep -F 'm_caster == EntityHandle_Player' "$SPELL"
+          grep -F 'startPos += angleToVector(Anglef(pitch, yaw, 0.f)) * 60.f;' "$SPELL"
           if grep -Fq 'arxvrGetRuneScreenPoint(g_size, vrRunePoint)' "$GAME"; then
             echo "Legacy HMD-relative rune projection remains in generated ArxGame.cpp" >&2
             exit 1
@@ -208,21 +224,22 @@ jobs:
           GAME=ArxAndroid/src/core/ArxGame.cpp
           EQUIP=ArxAndroid/src/game/Equipment.cpp
           RUNTIME=ArxAndroid/src/vr/VrDefenseRuntime.h
+          SPELL=ArxAndroid/src/game/magic/spells/SpellsLvl01.cpp
 
-          if git diff --quiet -- "$GAME" "$EQUIP" "$RUNTIME"; then
+          if git diff --quiet -- "$GAME" "$EQUIP" "$RUNTIME" "$SPELL"; then
             echo "Phase 4/5/7 live integration already matches generated output."
             echo "ARXVR_PHASE457_DIRTY=0" >> "$GITHUB_ENV"
             exit 0
           fi
 
-          git add "$GAME" "$EQUIP" "$RUNTIME"
+          git add "$GAME" "$EQUIP" "$RUNTIME" "$SPELL"
           CHANGED_FILES="$(git diff --cached --name-only)"
           test -n "$CHANGED_FILES"
           while IFS= read -r changed; do
-            test "$changed" = "$GAME" || test "$changed" = "$EQUIP" || test "$changed" = "$RUNTIME"
+            test "$changed" = "$GAME" || test "$changed" = "$EQUIP" || test "$changed" = "$RUNTIME" || test "$changed" = "$SPELL"
           done <<< "$CHANGED_FILES"
 
-          git -c core.whitespace=cr-at-eol diff --cached --check -- "$GAME" "$EQUIP" "$RUNTIME"
+          git -c core.whitespace=cr-at-eol diff --cached --check -- "$GAME" "$EQUIP" "$RUNTIME" "$SPELL"
 
           if ! git diff --cached --quiet -- "$GAME"; then
             read ADDED DELETED _ < <(git diff --cached "${BASE_COMMIT}" --numstat -- "$GAME")
@@ -230,7 +247,7 @@ jobs:
             test "$DELETED" != "-"
             CHANGED=$((ADDED + DELETED))
             echo "Semantic Phase 4/5/7 ArxGame diff vs ${BASE_COMMIT}: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
-            test "$CHANGED" -le 1500
+            test "$CHANGED" -le 1550
           fi
 
           if ! git diff --cached --quiet -- "$EQUIP"; then
@@ -251,7 +268,16 @@ jobs:
             test "$CHANGED" -le 120
           fi
 
-          git diff --cached --stat -- "$GAME" "$EQUIP" "$RUNTIME"
+          if ! git diff --cached --quiet -- "$SPELL"; then
+            read ADDED DELETED _ < <(git diff --cached --numstat -- "$SPELL")
+            test "$ADDED" != "-"
+            test "$DELETED" != "-"
+            CHANGED=$((ADDED + DELETED))
+            echo "Physical spell-aim diff: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+            test "$CHANGED" -le 100
+          fi
+
+          git diff --cached --stat -- "$GAME" "$EQUIP" "$RUNTIME" "$SPELL"
           echo "ARXVR_PHASE457_DIRTY=1" >> "$GITHUB_ENV"
 
       - name: Commit generated live integration
