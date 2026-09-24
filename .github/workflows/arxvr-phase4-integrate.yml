@@ -78,12 +78,39 @@ jobs:
         run: |
           set -euxo pipefail
           git add ArxAndroid/src/core/ArxGame.cpp
-      - name: Audit staged whitespace
+      - name: Repair generated trailing whitespace and audit diff
         shell: bash
         run: |
           set -euxo pipefail
-          # ArxGame is stored with CRLF in the historical source snapshot.
-          # Tell Git that CR is part of the line ending rather than trailing whitespace.
+          SOURCE=ArxAndroid/src/core/ArxGame.cpp
+          git diff --cached --check > /tmp/arxvr-diff-check.txt 2>&1 || true
+          cat /tmp/arxvr-diff-check.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          source = Path("ArxAndroid/src/core/ArxGame.cpp")
+          report = Path("/tmp/arxvr-diff-check.txt").read_text(errors="replace").splitlines()
+          trailing_lines = set()
+          unsupported = []
+          for line in report:
+              match = re.match(r"ArxAndroid/src/core/ArxGame\.cpp:(\d+): trailing whitespace\.$", line)
+              if match:
+                  trailing_lines.add(int(match.group(1)))
+              elif line.strip():
+                  unsupported.append(line)
+          if unsupported:
+              raise SystemExit("Unsupported diff-check diagnostics:\n" + "\n".join(unsupported))
+          if trailing_lines:
+              lines = source.read_bytes().splitlines(keepends=True)
+              for lineno in trailing_lines:
+                  index = lineno - 1
+                  if index < 0 or index >= len(lines):
+                      raise SystemExit(f"Invalid diff-check line number: {lineno}")
+                  lines[index] = re.sub(rb"[ \t]+(\r?\n)$", rb"\1", lines[index])
+              source.write_bytes(b"".join(lines))
+          PY
+          git add "$SOURCE"
           git -c core.whitespace=cr-at-eol diff --cached --check
       - name: Audit staged scope
         shell: bash
