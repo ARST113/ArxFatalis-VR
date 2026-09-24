@@ -66,18 +66,28 @@ jobs:
             echo "Quoted generator fragment found in generated C++" >&2
             exit 1
           fi
-      - name: Stage and audit live integration
+      - name: Require integration diff
         shell: bash
         run: |
           set -euxo pipefail
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
-          if git diff --quiet -- "$SOURCE"; then
-            echo "No integration diff produced" >&2
-            exit 1
-          fi
+          ! git diff --quiet -- "$SOURCE"
           git diff --stat -- "$SOURCE"
-          git add "$SOURCE"
+      - name: Stage generated ArxGame
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git add ArxAndroid/src/core/ArxGame.cpp
+      - name: Audit staged whitespace
+        shell: bash
+        run: |
+          set -euxo pipefail
           git diff --cached --check
+      - name: Audit staged scope
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SOURCE=ArxAndroid/src/core/ArxGame.cpp
           test "$(git diff --cached --name-only | wc -l)" -eq 1
           git diff --cached --name-only | grep -Fx "$SOURCE"
       - name: Commit repaired live integration
