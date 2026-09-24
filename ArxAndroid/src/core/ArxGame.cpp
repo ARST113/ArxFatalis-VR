@@ -155,6 +155,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #if defined(ARXVR_ANDROID_BUILD)
 #include "vr/AndroidVrBridge.h"
 #include "vr/AndroidVrInput.h"
+#include "vr/VrHaptics.h"
 #endif
 #include "platform/Platform.h"
 #include "platform/Process.h"
@@ -620,6 +621,10 @@ static void updateVrHeldObjectCombat(bool gripHeld) {
 	                                      : std::string_view("wood");
 	ARX_SOUND_PlayCollision("flesh", impactMaterial, 1.f, 1.f,
 	                        hitPosition, entities.player());
+	arxvrEmitHaptic(g_vrPhysicalDragUsesRightHand ? VrHapticHand::Right
+	                                               : VrHapticHand::Left,
+	                VrHapticEvent::ImpactHeavy,
+	                glm::clamp(speed / 300.f, 0.45f, 1.f));
 	g_vrHeldObjectCombat.lastHit = now;
 	++g_vrHeldObjectHitCount;
 	ARX_PLAYER_Remove_Invisibility();
@@ -689,6 +694,9 @@ static void updateVrFistCombat(bool rightHand, bool haveHand,
 		                   DAMAGE_TYPE_GENERIC, &hitPosition);
 	}
 	state.lastHit = now;
+	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
+	                VrHapticEvent::ImpactLight,
+	                glm::clamp(speed / 240.f, 0.35f, 1.f));
 	ARX_PLAYER_Remove_Invisibility();
 	LogInfo << "ArxVR fist hit: hand=" << (rightHand ? "right" : "left")
 	        << " target=" << target->idString() << " speed=" << speed
@@ -878,6 +886,8 @@ static void updateVrPhysicalInteraction() {
 		LogInfo << "ArxVR physical lever pull: hand="
 		        << (useRightHand ? "right" : "left") << " target="
 		        << target->idString() << " scriptResult=" << result;
+		arxvrEmitHaptic(useRightHand ? VrHapticHand::Right : VrHapticHand::Left,
+		                VrHapticEvent::Lever);
 		ARX_PLAYER_Remove_Invisibility();
 		return;
 	}
