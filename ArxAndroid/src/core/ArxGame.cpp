@@ -160,7 +160,6 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "vr/VrHaptics.h"
 #include "vr/VrInteractionSystem.h"
 #include "vr/VrRuneRuntime.h"
-#include "vr/VrSpellAim.h"
 #include "game/magic/SpellRecognition.h"
 #include "vr/VrWeaponContact.h"
 #include "vr/VrWeaponSystem.h"
@@ -3659,10 +3658,6 @@ void ArxGame::updateLevel() {
 
 	TreatBackgroundActions();
 
-	// Keep directional spell launches frame-local. Tracking loss or a
-	// paralysed player must never leave a stale controller ray available.
-	arxvr::vrSpellAimService().clear();
-
 	// Checks Magic Flares Drawing
 	if(!player.m_paralysed) {
 		bool runeDrawPressed = eeMousePressed1();
@@ -3675,15 +3670,7 @@ void ArxGame::updateLevel() {
 			                         g_vrCenterCamera, player.angle.getYaw(),
 			                         vrRuneHandPosition, vrRuneHandDirection,
 			                         vrRuneHandOrientation);
-		arxvr::VrSpellAimSample vrSpellAimSample;
-		vrSpellAimSample.origin = {
-			vrRuneHandPosition.x, vrRuneHandPosition.y, vrRuneHandPosition.z
-		};
-		vrSpellAimSample.forward = {
-			vrRuneHandDirection.x, vrRuneHandDirection.y, vrRuneHandDirection.z
-		};
-		vrSpellAimSample.trackingValid = vrRuneTracking;
-		arxvr::vrSpellAimService().update(vrSpellAimSample);
+		(void)vrRuneHandDirection;
 		(void)vrRuneHandOrientation;
 
 		arxvr::VrRuneSample vrRuneSample;
