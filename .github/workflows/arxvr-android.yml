@@ -102,6 +102,16 @@ jobs:
           git -C android-deps fetch --depth 1 --filter=blob:none origin "${ANDROID_DEPS_COMMIT}"
           git -C android-deps checkout --detach FETCH_HEAD
 
+          # The Arx dependency wrapper stores its actual third-party sources as
+          # gitlinks. Initialise only the five submodules required by this build;
+          # their exact commits come from ANDROID_DEPS_COMMIT.
+          git -C android-deps submodule update --init --depth 1 --jobs 4 -- \
+            third_party/freetype/src/main/jni/freetype \
+            third_party/openal/src/main/jni/openal \
+            third_party/glm \
+            third_party/sse2neon \
+            app/src/main/jni/etcpaksources/etcpak
+
           git init .ci-pico-upstream
           git -C .ci-pico-upstream remote add origin https://github.com/picoxr/OpenXR_Demos.git
           git -C .ci-pico-upstream sparse-checkout init --cone
@@ -120,6 +130,11 @@ jobs:
 
           test -f SDL2/include/SDL.h
           test -f android-deps/app/src/main/jni/etcpaksources/CMakeLists.txt
+          test -f android-deps/app/src/main/jni/etcpaksources/etcpak/ProcessDxtc.cpp
+          test -f android-deps/third_party/freetype/src/main/jni/freetype/CMakeLists.txt
+          test -f android-deps/third_party/openal/src/main/jni/openal/CMakeLists.txt
+          test -f android-deps/third_party/glm/glm/glm.hpp
+          test -f android-deps/third_party/sse2neon/sse2neon.h
           test -s PICO-OpenXR-Demos/app/src/main/cpp/openxr_loader/lib/arm64-v8a/libopenxr_loader.so
           test -s PICO-OpenXR-Demos/app/src/main/cpp/third/assimp/lib/arm64-v8a/libassimp.so
 
