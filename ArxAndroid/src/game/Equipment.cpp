@@ -45,6 +45,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 // Copyright (c) 1999-2001 ARKANE Studios SA. All rights reserved
 
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <algorithm>
 #include <vector>
@@ -98,6 +99,11 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "util/Number.h"
 #include "util/String.h"
+
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrDefenseRuntime.h"
+#include "vr/VrHaptics.h"
+#endif
 
 
 struct EQUIP_INFO {
@@ -626,7 +632,28 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 		if(io_source != entities.player()) {
 			sphere.radius += 15.f;
 		}
-		
+
+#if defined(ARXVR_ANDROID_BUILD)
+		bool vrShieldBlocked = false;
+		if(io_source != entities.player()) {
+			const std::uint64_t sourceToken = static_cast<std::uint64_t>(
+				reinterpret_cast<std::uintptr_t>(io_source));
+			const std::uint64_t actionToken = static_cast<std::uint64_t>(
+				reinterpret_cast<std::uintptr_t>(io_weapon))
+				^ (static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&action)) << 1u);
+			arxvr::VrDefenseEvent defenseEvent;
+			vrShieldBlocked = arxvr::vrDefenseRuntime().sampleShieldBlock(
+				sourceToken, actionToken,
+				{ sphere.origin.x, sphere.origin.y, sphere.origin.z },
+				arxvr::vrDefenseNowMicros(), defenseEvent);
+			if(vrShieldBlocked) {
+				const float strength = std::clamp(defenseEvent.relativeSpeed / 3000.f,
+				                                  0.35f, 1.f);
+				arxvrEmitHaptic(VrHapticHand::Left, VrHapticEvent::Block, strength);
+			}
+		}
+#endif
+
 		std::vector<Entity *> sphereContent;
 		if(CheckEverythingInSphere(sphere, io_source, entities.get(targ), sphereContent)) {
 			for(Entity * target : sphereContent) {
@@ -660,7 +687,16 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 					
 					Color color = (target->ioflags & IO_NPC) ? target->_npcdata->blood_color : Color::white;
 					Vec3f pos = target->obj->vertexWorldPositions[hitpoint].v;
-					
+
+#if defined(ARXVR_ANDROID_BUILD)
+					// A physical shield block consumes only this NPC equipment strike.
+					// Generic damage, spells and environmental sources continue through
+					// their existing pipelines unchanged.
+					if(target == entities.player() && vrShieldBlocked) {
+						continue;
+					}
+#endif
+
 					float dmgs = 0.f;
 					if(!(flags & 1)) {
 						

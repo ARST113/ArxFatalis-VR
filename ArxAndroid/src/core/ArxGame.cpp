@@ -156,6 +156,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #if defined(ARXVR_ANDROID_BUILD)
 #include "vr/AndroidVrBridge.h"
 #include "vr/AndroidVrInput.h"
+#include "vr/VrDefenseRuntime.h"
 #include "vr/VrHaptics.h"
 #include "vr/VrInteractionSystem.h"
 #include "vr/VrWeaponContact.h"
@@ -863,6 +864,7 @@ static void updateVrPhysicalInteraction() {
 	if(!g_haveVrCenterCamera || ARXmenu.mode() != Mode_InGame) {
 		g_vrInteractions.resetSession();
 		g_vrWeaponSystem.reset();
+		arxvr::vrDefenseRuntime().resetSession();
 		g_vrInteractionTarget = EntityHandle();
 		arxvrSetDirectInteractionTriggerCaptured(false);
 		return;
@@ -888,6 +890,24 @@ static void updateVrPhysicalInteraction() {
 	const bool physicalDragActive = isVrPhysicalDragActive();
 	const bool rightDragging = physicalDragActive && g_vrPhysicalDragUsesRightHand;
 	const bool leftDragging = physicalDragActive && !g_vrPhysicalDragUsesRightHand;
+
+	// Publish the actual off-hand controller pose only while a shield is
+	// equipped and the hand is available for defense. The runtime applies a
+	// short freshness window, so tracking loss fails closed without leaving
+	// a frozen shield collider active in front of the player.
+	Entity * equippedShield = entities.get(player.equiped[EQUIP_SLOT_SHIELD]);
+	if(equippedShield && haveLeftHand && !leftDragging && !BLOCK_PLAYER_CONTROLS) {
+		arxvr::VrShieldPose shieldPose;
+		shieldPose.center = vrImpactVector(leftHandPosition);
+		shieldPose.normal = vrImpactVector(leftHandDirection);
+		shieldPose.up = vrImpactVector(leftHandOrientation * Vec3f(0.f, 1.f, 0.f));
+		shieldPose.valid = true;
+		arxvr::vrDefenseRuntime().publishShield(
+			static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(equippedShield)),
+			arxvr::VrShieldProfile{}, shieldPose, impactTimestampUs);
+	} else {
+		arxvr::vrDefenseRuntime().clearShield();
+	}
 
 	// Each physical hand owns exactly one semantic impact source per frame.
 	// An equipped melee weapon takes ownership of the dominant (right) hand
