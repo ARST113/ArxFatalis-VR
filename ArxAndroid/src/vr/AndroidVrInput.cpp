@@ -9,6 +9,7 @@
 #include "graphics/Math.h"
 #include "io/log/Logger.h"
 #include "vr/AndroidVrBridge.h"
+#include "vr/VrConfig.h"
 
 namespace {
 
@@ -17,10 +18,13 @@ constexpr float kHalfIpdArxUnits = 3.2f;
 constexpr float kStickDeadzone = 0.18f;
 constexpr float kSnapActivation = 0.72f;
 constexpr float kSnapReset = 0.35f;
-constexpr float kSnapDegrees = 30.f;
 constexpr float kRuneTriggerThreshold = 0.12f;
 constexpr float kPhysicalCrouchEnterArxUnits = 10.f;
 constexpr float kPhysicalCrouchExitArxUnits = 5.f;
+// Left X is intentionally reserved as the accessibility crouch hold when
+// physical crouching is unavailable. Y remains magic mode; both grips remain
+// physical hand/object interaction inputs.
+constexpr std::uint32_t kVrButtonCrouch = ARXVR_BUTTON_LEFT_X;
 // Must match the world-fixed panel anchor in the OpenXR presentation layer.
 // A mismatched ray plane shifts the controller cursor and makes visible menu
 // items appear unclickable.
@@ -64,6 +68,8 @@ Vec3f g_lastHandWorldPosition[2] = { Vec3f(0.f), Vec3f(0.f) };
 glm::quat g_lastHandWorldOrientation[2] = {
 	glm::quat(1.f, 0.f, 0.f, 0.f), glm::quat(1.f, 0.f, 0.f, 0.f)
 };
+VrConfig g_vrConfig;
+bool g_vrConfigLoaded = false;
 
 glm::quat poseOrientation(const ArxVrPose & pose) {
 	return glm::normalize(glm::quat(pose.orientation[3], pose.orientation[0],
@@ -121,9 +127,42 @@ float normalizeAngleDelta(float degrees) {
 	return degrees;
 }
 
+void ensureVrConfigLoaded() {
+	if(!g_vrConfigLoaded) {
+		arxvrReloadRuntimeConfig();
+	}
+}
+
+bool buttonCrouchRequested(const ArxVrTrackingState & state) {
+	return (state.buttonMask & kVrButtonCrouch) != 0u;
+}
+
 } // namespace
 
+void arxvrReloadRuntimeConfig() {
+	g_vrConfig = arxvrLoadRuntimeConfig();
+	g_vrConfigLoaded = true;
+	g_haveReferenceHead = false;
+	g_relativeHeadAngle = Anglef();
+	g_relativeHeadPosition = Vec3f(0.f);
+	g_bodyFollowYaw = 0.f;
+	g_pendingSnapTurn = 0.f;
+	g_snapTurnReady = true;
+	g_physicalCrouchActive = false;
+	g_haveStandingHeadHeight = g_vrConfig.standingHeightOverrideMeters > 0.f;
+	g_standingHeadHeightMeters = g_haveStandingHeadHeight
+	                           ? g_vrConfig.standingHeightOverrideMeters : 0.f;
+	LogInfo << "ArxVR config: stance="
+	        << (g_vrConfig.stance == VrStanceMode::Seated ? "seated" : "standing")
+	        << " physicalCrouch=" << g_vrConfig.physicalCrouch
+	        << " snapTurn=" << g_vrConfig.snapTurnDegrees
+	        << " standingHeightOverride=" << g_vrConfig.standingHeightOverrideMeters
+	        << " eyeHeightOffset=" << g_vrConfig.eyeHeightOffsetMeters
+	        << " buttonCrouch=left_x";
+}
+
 void arxvrUpdateGameInput() {
+	ensureVrConfigLoaded();
 	g_previousDiagnosticLowerGrip = g_diagnosticLowerGrip;
 	g_previousDiagnosticIndexTrigger = g_diagnosticIndexTrigger;
 	ArxVrTrackingState state = {};
@@ -153,8 +192,9 @@ void arxvrUpdateGameInput() {
 			g_referenceMenuOrientation = uprightMenuOrientation(currentXrOrientation);
 			g_referenceTrackingOrientation = uprightMenuOrientation(currentXrOrientation);
 			const float currentHeight = state.head.position[1];
-			if(!g_haveStandingHeadHeight
-			   || std::abs(currentHeight - g_standingHeadHeightMeters) > 0.75f) {
+			if(g_vrConfig.standingHeightOverrideMeters <= 0.f
+			   && (!g_haveStandingHeadHeight
+			       || std::abs(currentHeight - g_standingHeadHeightMeters) > 0.75f)) {
 				g_standingHeadHeightMeters = currentHeight;
 				g_haveStandingHeadHeight = true;
 				LogInfo << "ArxVR standing height calibrated: "
@@ -188,28 +228,41 @@ void arxvrUpdateGameInput() {
 		g_relativeHeadPosition = Vec3f(xrOffset.x, -xrOffset.y, -xrOffset.z)
 		                       * kMetersToArxUnits;
 
-		// Preserve the tallest observed standing pose across pause/menu recenter
-		// events. A one-frame reference captured while the player was already
-		// leaning or crouched made physical crouch impossible until now.
 		const float currentHeight = state.head.position[1];
-		if(!g_haveStandingHeadHeight || currentHeight > g_standingHeadHeightMeters) {
-			g_standingHeadHeightMeters = currentHeight;
-			g_haveStandingHeadHeight = true;
-		}
-		const float verticalDrop = std::max(
-			(g_standingHeadHeightMeters - currentHeight) * kMetersToArxUnits, 0.f);
-		g_relativeHeadPosition.y = verticalDrop;
-
+		const bool useTrackedCrouch = g_vrConfig.stance == VrStanceMode::Standing
+		                           && g_vrConfig.physicalCrouch;
 		const bool previousCrouch = g_physicalCrouchActive;
-		if(g_physicalCrouchActive) {
-			g_physicalCrouchActive = verticalDrop
-			                      > kPhysicalCrouchExitArxUnits;
+		float verticalDrop = 0.f;
+		if(useTrackedCrouch) {
+			// Preserve the tallest observed standing pose across pause/menu recenter
+			// events unless a fixed floor-relative height override is configured.
+			if(g_vrConfig.standingHeightOverrideMeters <= 0.f
+			   && (!g_haveStandingHeadHeight || currentHeight > g_standingHeadHeightMeters)) {
+				g_standingHeadHeightMeters = currentHeight;
+				g_haveStandingHeadHeight = true;
+			}
+			if(g_haveStandingHeadHeight) {
+				verticalDrop = std::max(
+					(g_standingHeadHeightMeters - currentHeight) * kMetersToArxUnits, 0.f);
+			}
+			g_relativeHeadPosition.y = verticalDrop
+			                         + g_vrConfig.eyeHeightOffsetMeters * kMetersToArxUnits;
+			if(g_physicalCrouchActive) {
+				g_physicalCrouchActive = verticalDrop > kPhysicalCrouchExitArxUnits;
+			} else {
+				g_physicalCrouchActive = verticalDrop >= kPhysicalCrouchEnterArxUnits;
+			}
 		} else {
-			g_physicalCrouchActive = verticalDrop
-			                      >= kPhysicalCrouchEnterArxUnits;
+			// Seated play keeps natural local head motion for leaning/bobbing while
+			// crouch becomes an explicit hold action. This prevents the user's chair
+			// height from being interpreted as a permanently crouched avatar.
+			g_relativeHeadPosition.y +=
+				g_vrConfig.eyeHeightOffsetMeters * kMetersToArxUnits;
+			g_physicalCrouchActive = buttonCrouchRequested(state);
 		}
 		if(g_physicalCrouchActive != previousCrouch) {
-			LogInfo << "ArxVR physical crouch: active=" << g_physicalCrouchActive
+			LogInfo << "ArxVR crouch: active=" << g_physicalCrouchActive
+			        << " source=" << (useTrackedCrouch ? "tracked_height" : "left_x")
 			        << " verticalDrop=" << verticalDrop
 			        << " standingHeight=" << g_standingHeadHeightMeters
 			        << " currentHeight=" << currentHeight;
@@ -221,12 +274,14 @@ void arxvrUpdateGameInput() {
 		g_snapTurnReady = true;
 	} else if(g_snapTurnReady && std::abs(turn) >= kSnapActivation) {
 		// Arx yaw decreases when turning to the right.
-		g_pendingSnapTurn += (turn > 0.f) ? -kSnapDegrees : kSnapDegrees;
+		g_pendingSnapTurn += (turn > 0.f)
+		                   ? -g_vrConfig.snapTurnDegrees : g_vrConfig.snapTurnDegrees;
 		g_snapTurnReady = false;
 	}
 }
 
 void arxvrResetReferenceHead() {
+	ensureVrConfigLoaded();
 	g_haveReferenceHead = false;
 	g_relativeHeadAngle = Anglef();
 	g_relativeHeadPosition = Vec3f(0.f);
@@ -279,6 +334,11 @@ void arxvrClearDiagnosticControls() {
 
 bool arxvrHasTracking() {
 	return g_haveState && (g_state.validMask & ARXVR_VALID_HEAD) != 0;
+}
+
+bool arxvrSeatedModeActive() {
+	ensureVrConfigLoaded();
+	return g_vrConfig.stance == VrStanceMode::Seated;
 }
 
 float arxvrMoveX() {
