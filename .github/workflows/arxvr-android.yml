@@ -90,12 +90,25 @@ jobs:
 
           git init android-deps
           git -C android-deps remote add origin https://github.com/sandstranger/com.mobilerpgpack.phone.git
-          git -C android-deps fetch --depth 1 origin "${ANDROID_DEPS_COMMIT}"
+          git -C android-deps sparse-checkout init --cone
+          git -C android-deps sparse-checkout set \
+            app/src/main/jni/etcpaksources \
+            app/src/main/assets/game_files/ArxLibertatis \
+            third_party/freetype/src/main/jni/freetype \
+            third_party/openal/src/main/jni/openal \
+            third_party/boost \
+            third_party/glm \
+            third_party/sse2neon
+          git -C android-deps fetch --depth 1 --filter=blob:none origin "${ANDROID_DEPS_COMMIT}"
           git -C android-deps checkout --detach FETCH_HEAD
 
           git init .ci-pico-upstream
           git -C .ci-pico-upstream remote add origin https://github.com/picoxr/OpenXR_Demos.git
-          git -C .ci-pico-upstream fetch --depth 1 origin "${PICO_OPENXR_COMMIT}"
+          git -C .ci-pico-upstream sparse-checkout init --cone
+          git -C .ci-pico-upstream sparse-checkout set \
+            app/src/main/cpp/openxr_loader/lib/arm64-v8a \
+            app/src/main/cpp/third/assimp/lib/arm64-v8a
+          git -C .ci-pico-upstream fetch --depth 1 --filter=blob:none origin "${PICO_OPENXR_COMMIT}"
           git -C .ci-pico-upstream checkout --detach FETCH_HEAD
 
           mkdir -p PICO-OpenXR-Demos/app/src/main/cpp/openxr_loader/lib/arm64-v8a
