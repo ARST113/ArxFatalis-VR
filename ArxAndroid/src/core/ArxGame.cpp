@@ -159,6 +159,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "vr/VrHaptics.h"
 #include "vr/VrInteractionSystem.h"
 #include "vr/VrWeaponContact.h"
+#include "vr/VrWeaponSystem.h"
 #endif
 #include "platform/Platform.h"
 #include "platform/Process.h"
@@ -529,6 +530,7 @@ static Entity * findVrPhysicalInteractionTarget(const Vec3f & handPosition,
 }
 
 static arxvr::VrInteractionSystem g_vrInteractions;
+static arxvr::VrWeaponSystem g_vrWeaponSystem;
 
 static std::uint64_t vrImpactTimestampUs() {
 	return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -693,14 +695,28 @@ static Entity * findVrEquippedWeaponTarget(const arxvr::VrWeaponSegment & segmen
 static void updateVrEquippedWeaponCombat(bool rightHand, bool haveHand,
                                          const Vec3f & handPosition,
                                          const Vec3f & handDirection,
+                                         const Vec3f & handUp,
+                                         bool haveSecondaryHand,
+                                         const Vec3f & secondaryHandPosition,
+                                         bool secondaryGripPressed,
                                          Entity & weapon,
                                          const arxvr::VrWeaponProfile & profile,
                                          bool allowHit, std::uint64_t timestampUs) {
 	const arxvr::VrHand hand = rightHand ? arxvr::VrHand::Right : arxvr::VrHand::Left;
-	const arxvr::VrWeaponSegment segment = haveHand
-	    ? arxvr::vrBuildWeaponSegment(profile, vrImpactVector(handPosition),
-	                                  vrImpactVector(handDirection))
-	    : arxvr::VrWeaponSegment{};
+
+	arxvr::VrWeaponTrackingSample tracking;
+	tracking.weaponToken = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&weapon));
+	tracking.primaryPosition = vrImpactVector(handPosition);
+	tracking.primaryForward = vrImpactVector(handDirection);
+	tracking.primaryUp = vrImpactVector(handUp);
+	tracking.primaryValid = haveHand;
+	tracking.secondaryPosition = vrImpactVector(secondaryHandPosition);
+	tracking.secondaryValid = haveSecondaryHand;
+	tracking.secondaryGripPressed = secondaryGripPressed;
+
+	const arxvr::VrWeaponPose weaponPose = g_vrWeaponSystem.update(profile, tracking);
+	const arxvr::VrWeaponSegment segment =
+		g_vrWeaponSystem.buildContactSegment(profile, weaponPose);
 
 	arxvr::VrImpactSample sample;
 	sample.motion.timestampUs = timestampUs;
@@ -710,11 +726,11 @@ static void updateVrEquippedWeaponCombat(bool rightHand, bool haveHand,
 		sample.motion.z = segment.end.z;
 	}
 	sample.source = arxvr::VrImpactSource::EquippedWeapon;
-	sample.sourceToken = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&weapon));
+	sample.sourceToken = tracking.weaponToken;
 	sample.profileOverride = profile.strike;
 	sample.effectiveMass = profile.effectiveMass;
-	sample.gestureActive = haveHand && segment.valid && allowHit;
-	sample.trackingValid = haveHand && segment.valid;
+	sample.gestureActive = weaponPose.valid && segment.valid && allowHit;
+	sample.trackingValid = weaponPose.valid && segment.valid;
 	sample.useProfileOverride = true;
 
 	const arxvr::VrImpactGateStatus status = g_vrInteractions.updateHand(hand, sample);
@@ -756,6 +772,7 @@ static void updateVrEquippedWeaponCombat(bool rightHand, bool haveHand,
 	LogInfo << "ArxVR equipped-weapon hit: weapon=" << weapon.idString()
 	        << " target=" << target->idString() << " speed=" << impactSpeed
 	        << " mass=" << impact.effectiveMass << " contactT=" << contactT
+	        << " twoHanded=" << weaponPose.twoHanded
 	        << " path=" << impact.metrics.pathLength
 	        << " consistency=" << impact.metrics.directionalConsistency
 	        << " strength=" << strength << " damage=" << damage
@@ -845,6 +862,7 @@ static void updateVrPhysicalInteraction() {
 
 	if(!g_haveVrCenterCamera || ARXmenu.mode() != Mode_InGame) {
 		g_vrInteractions.resetSession();
+		g_vrWeaponSystem.reset();
 		g_vrInteractionTarget = EntityHandle();
 		arxvrSetDirectInteractionTriggerCaptured(false);
 		return;
@@ -879,19 +897,30 @@ static void updateVrPhysicalInteraction() {
 		vrWeaponClassForArx(ARX_EQUIPMENT_GetPlayerWeaponType()));
 	const bool equippedMeleeActive = equippedWeapon && equippedProfile.physicalMelee
 	                              && (player.Interface & INTER_COMBATMODE);
+	if(!equippedMeleeActive || rightDragging) {
+		g_vrWeaponSystem.reset();
+	}
 	if(!rightDragging) {
 		if(equippedMeleeActive) {
-			updateVrEquippedWeaponCombat(true, haveRightHand, rightHandPosition,
-			                             rightHandDirection, *equippedWeapon,
-			                             equippedProfile, !BLOCK_PLAYER_CONTROLS,
-			                             impactTimestampUs);
+			const Vec3f rightHandUp = haveRightHand
+			                        ? rightHandOrientation * Vec3f(0.f, 1.f, 0.f)
+			                        : Vec3f(0.f, 1.f, 0.f);
+			const bool secondaryAvailable = haveLeftHand && !leftDragging;
+			updateVrEquippedWeaponCombat(
+				true, haveRightHand, rightHandPosition, rightHandDirection, rightHandUp,
+				secondaryAvailable, leftHandPosition,
+				secondaryAvailable && arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
+				*equippedWeapon, equippedProfile, !BLOCK_PLAYER_CONTROLS,
+				impactTimestampUs);
 		} else {
 			updateVrFistCombat(true, haveRightHand, rightHandPosition,
 			                  arxvrButtonPressed(ARXVR_BUTTON_RIGHT_SQUEEZE),
 			                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
 		}
 	}
-	if(!leftDragging) {
+	const bool secondaryWeaponGripActive = equippedMeleeActive
+	                                    && g_vrWeaponSystem.twoHanded();
+	if(!leftDragging && !secondaryWeaponGripActive) {
 		updateVrFistCombat(false, haveLeftHand, leftHandPosition,
 		                  arxvrButtonPressed(ARXVR_BUTTON_LEFT_SQUEEZE),
 		                  !BLOCK_PLAYER_CONTROLS, impactTimestampUs);
