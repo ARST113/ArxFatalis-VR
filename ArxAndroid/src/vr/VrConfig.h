@@ -24,6 +24,9 @@ struct VrConfig {
 	VrStanceMode stance = VrStanceMode::Standing;
 	bool physicalCrouch = true;
 	float snapTurnDegrees = 30.f;
+	// Global multiplier applied after each semantic haptic preset. Zero disables
+	// controller haptics without disabling the semantic event pipeline.
+	float hapticStrength = 1.f;
 	// Zero keeps automatic tallest-observed calibration. A positive value is a
 	// floor-relative standing eye-height override in metres.
 	float standingHeightOverrideMeters = 0.f;
@@ -75,6 +78,8 @@ inline VrConfig arxvrLoadRuntimeConfig() {
 		arxvrReadSystemProperty("debug.arxvr.physical_crouch"), true);
 	config.snapTurnDegrees = arxvrParseFloatProperty(
 		arxvrReadSystemProperty("debug.arxvr.snap_turn"), 30.f, 15.f, 90.f);
+	config.hapticStrength = arxvrParseFloatProperty(
+		arxvrReadSystemProperty("debug.arxvr.haptic_strength"), 1.f, 0.f, 1.f);
 	config.standingHeightOverrideMeters = arxvrParseFloatProperty(
 		arxvrReadSystemProperty("debug.arxvr.player_height"), 0.f, 0.f, 2.4f);
 	// Treat very small non-zero heights as an accidental property value rather
