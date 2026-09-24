@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Upgrade VrDefenseRuntime from a single defense latch to a bounded keyed latch table.
+"""Upgrade VrDefenseRuntime to a bounded keyed table for defended NPC strikes.
 
-The live equipment path can evaluate overlapping NPC weapon strikes in the same
-300 ms suppression window. A single mutable latch lets a later defended strike
-overwrite an earlier one, so a subsequent action point from the first strike can
-leak through to normal Arx damage. This generator is intentionally deterministic
-and refuses to run unless the expected pre-patch source is present exactly once.
+Overlapping NPC equipment strikes can share the same 300 ms suppression window.
+A single mutable latch lets a later defended strike overwrite an earlier one, so
+a later action point from the first strike can leak into normal Arx damage. The
+generator is deterministic, idempotent, and also migrates the first table version
+whose allocator could reuse an expired slot before discovering a matching key.
 """
 
 from pathlib import Path
@@ -20,21 +20,128 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+OLD_TABLE_ARM = '''\tvoid armDefenseLatch(std::uint64_t sourceToken,
+\t                     std::uint64_t strikeToken,
+\t                     VrDefenseEventType type,
+\t                     std::uint64_t timestampUs) {
+\t\tif(sourceToken == 0 || strikeToken == 0 || timestampUs == 0
+\t\t   || type == VrDefenseEventType::None) {
+\t\t\treturn;
+\t\t}
+
+\t\tDefenseLatch * target = nullptr;
+\t\tDefenseLatch * oldest = &m_latches[0];
+\t\tfor(DefenseLatch & latch : m_latches) {
+\t\t\tif(latch.active && latch.sourceToken == sourceToken
+\t\t\t   && latch.strikeToken == strikeToken) {
+\t\t\t\ttarget = &latch;
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tif(!latch.active) {
+\t\t\t\ttarget = &latch;
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tif(timestampUs >= latch.timestampUs
+\t\t\t   && timestampUs - latch.timestampUs > m_config.defenseLatchUs) {
+\t\t\t\ttarget = &latch;
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tif(latch.timestampUs < oldest->timestampUs) {
+\t\t\t\toldest = &latch;
+\t\t\t}
+\t\t}
+\t\tif(!target) {
+\t\t\ttarget = oldest;
+\t\t}
+
+\t\ttarget->sourceToken = sourceToken;
+\t\ttarget->strikeToken = strikeToken;
+\t\ttarget->type = type;
+\t\ttarget->timestampUs = timestampUs;
+\t\ttarget->active = true;
+\t}
+'''
+
+NEW_TABLE_ARM = '''\tvoid armDefenseLatch(std::uint64_t sourceToken,
+\t                     std::uint64_t strikeToken,
+\t                     VrDefenseEventType type,
+\t                     std::uint64_t timestampUs) {
+\t\tif(sourceToken == 0 || strikeToken == 0 || timestampUs == 0
+\t\t   || type == VrDefenseEventType::None) {
+\t\t\treturn;
+\t\t}
+
+\t\t// Preserve an existing key before considering reusable slots. This avoids
+\t\t// creating duplicate entries when an expired slot appears earlier in the
+\t\t// table than the still-active entry for the same NPC weapon strike.
+\t\tfor(DefenseLatch & latch : m_latches) {
+\t\t\tif(latch.active && latch.sourceToken == sourceToken
+\t\t\t   && latch.strikeToken == strikeToken) {
+\t\t\t\tstoreDefenseLatch(latch, sourceToken, strikeToken, type, timestampUs);
+\t\t\t\treturn;
+\t\t\t}
+\t\t}
+
+\t\tDefenseLatch * target = nullptr;
+\t\tDefenseLatch * oldest = &m_latches[0];
+\t\tfor(DefenseLatch & latch : m_latches) {
+\t\t\tif(!latch.active) {
+\t\t\t\ttarget = &latch;
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tif(timestampUs >= latch.timestampUs
+\t\t\t   && timestampUs - latch.timestampUs > m_config.defenseLatchUs) {
+\t\t\t\ttarget = &latch;
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tif(latch.timestampUs < oldest->timestampUs) {
+\t\t\t\toldest = &latch;
+\t\t\t}
+\t\t}
+\t\tstoreDefenseLatch(target ? *target : *oldest,
+\t\t                 sourceToken, strikeToken, type, timestampUs);
+\t}
+
+\tstatic void storeDefenseLatch(DefenseLatch & latch,
+\t                              std::uint64_t sourceToken,
+\t                              std::uint64_t strikeToken,
+\t                              VrDefenseEventType type,
+\t                              std::uint64_t timestampUs) {
+\t\tlatch.sourceToken = sourceToken;
+\t\tlatch.strikeToken = strikeToken;
+\t\tlatch.type = type;
+\t\tlatch.timestampUs = timestampUs;
+\t\tlatch.active = true;
+\t}
+'''
+
+
+def validate_table(text: str) -> None:
+    if "DefenseLatch m_latch{};" in text:
+        raise RuntimeError("mixed single/table defense latch state")
+    if text.count("std::array<DefenseLatch, 8> m_latches{};") != 1:
+        raise RuntimeError("expected one bounded latch table")
+    if "for(const DefenseLatch & latch : m_latches)" not in text:
+        raise RuntimeError("latch table storage exists without table query")
+    if "storeDefenseLatch(target ? *target : *oldest" not in text:
+        raise RuntimeError("latch table exists without two-pass allocator")
+
+
 def main() -> None:
     text = PATH.read_text(encoding="utf-8")
 
-    # The integration helper can run again after its generated commit lands.
-    # Treat the fully upgraded form as success while still rejecting partial
-    # or ambiguous source states.
     if "std::array<DefenseLatch, 8> m_latches{};" in text:
-        if "DefenseLatch m_latch{};" in text:
-            raise RuntimeError("mixed single/table defense latch state")
-        if "for(const DefenseLatch & latch : m_latches)" not in text:
-            raise RuntimeError("latch table storage exists without table query")
-        if "DefenseLatch * target = nullptr;" not in text:
-            raise RuntimeError("latch table storage exists without allocator")
-        print("VrDefenseRuntime multi-strike latch table already applied")
-        return
+        if NEW_TABLE_ARM in text:
+            validate_table(text)
+            print("VrDefenseRuntime multi-strike latch table already applied")
+            return
+        if OLD_TABLE_ARM in text:
+            text = replace_once(text, OLD_TABLE_ARM, NEW_TABLE_ARM, "table allocator migration")
+            validate_table(text)
+            PATH.write_text(text, encoding="utf-8")
+            print("Migrated VrDefenseRuntime latch allocator to two-pass key preservation")
+            return
+        raise RuntimeError("unrecognised partial multi-strike latch table state")
 
     old_query = '''\tbool defenseLatched(std::uint64_t sourceToken,
 \t                    std::uint64_t strikeToken,
@@ -106,48 +213,7 @@ def main() -> None:
 \t\tm_latch.active = type != VrDefenseEventType::None;
 \t}
 '''
-    new_arm = '''\tvoid armDefenseLatch(std::uint64_t sourceToken,
-\t                     std::uint64_t strikeToken,
-\t                     VrDefenseEventType type,
-\t                     std::uint64_t timestampUs) {
-\t\tif(sourceToken == 0 || strikeToken == 0 || timestampUs == 0
-\t\t   || type == VrDefenseEventType::None) {
-\t\t\treturn;
-\t\t}
-
-\t\tDefenseLatch * target = nullptr;
-\t\tDefenseLatch * oldest = &m_latches[0];
-\t\tfor(DefenseLatch & latch : m_latches) {
-\t\t\tif(latch.active && latch.sourceToken == sourceToken
-\t\t\t   && latch.strikeToken == strikeToken) {
-\t\t\t\ttarget = &latch;
-\t\t\t\tbreak;
-\t\t\t}
-\t\t\tif(!latch.active) {
-\t\t\t\ttarget = &latch;
-\t\t\t\tbreak;
-\t\t\t}
-\t\t\tif(timestampUs >= latch.timestampUs
-\t\t\t   && timestampUs - latch.timestampUs > m_config.defenseLatchUs) {
-\t\t\t\ttarget = &latch;
-\t\t\t\tbreak;
-\t\t\t}
-\t\t\tif(latch.timestampUs < oldest->timestampUs) {
-\t\t\t\toldest = &latch;
-\t\t\t}
-\t\t}
-\t\tif(!target) {
-\t\t\ttarget = oldest;
-\t\t}
-
-\t\ttarget->sourceToken = sourceToken;
-\t\ttarget->strikeToken = strikeToken;
-\t\ttarget->type = type;
-\t\ttarget->timestampUs = timestampUs;
-\t\ttarget->active = true;
-\t}
-'''
-    text = replace_once(text, old_arm, new_arm, "latch allocation")
+    text = replace_once(text, old_arm, NEW_TABLE_ARM, "latch allocation")
 
     old_member = '''\tVrPublishedShield m_shield{};
 \tVrPublishedDefenderWeapon m_defenderWeapon{};
@@ -165,9 +231,7 @@ def main() -> None:
 
     if "m_latch" in text.replace("m_latches", ""):
         raise RuntimeError("legacy single defense latch reference remains")
-    if text.count("std::array<DefenseLatch, 8> m_latches{};") != 1:
-        raise RuntimeError("expected one bounded latch table")
-
+    validate_table(text)
     PATH.write_text(text, encoding="utf-8")
 
 
