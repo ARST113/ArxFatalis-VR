@@ -28,7 +28,15 @@ jobs:
         run: |
           set -euxo pipefail
           BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
-          git checkout "${BASE_COMMIT}" -- ArxAndroid/src/core/ArxGame.cpp
+          SOURCE=ArxAndroid/src/core/ArxGame.cpp
+          git show "${BASE_COMMIT}:${SOURCE}" > "${SOURCE}"
+          # The guarded generator uses LF anchors. Normalize its working copy,
+          # then restore the blob's original line-ending convention afterwards.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("ArxAndroid/src/core/ArxGame.cpp")
+          path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
+          PY
           python3 tools/arxvr_apply_phase4_live_integration_v2.py
           python3 - <<'PY'
           from pathlib import Path
@@ -64,14 +72,17 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          if git diff --quiet -- ArxAndroid/src/core/ArxGame.cpp; then
+          SOURCE=ArxAndroid/src/core/ArxGame.cpp
+          if git diff --quiet -- "$SOURCE"; then
             echo "No integration diff produced" >&2
             exit 1
           fi
-          git diff --check
-          git diff --stat
+          git diff --check -- "$SOURCE"
+          git diff --stat -- "$SOURCE"
+          git add "$SOURCE"
+          git diff --cached --check
+          test "$(git diff --cached --name-only)" = "$SOURCE"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add ArxAndroid/src/core/ArxGame.cpp
           git commit -m "Repair Phase 4 live combat integration"
           git push origin HEAD:vr-foundation-phase1
