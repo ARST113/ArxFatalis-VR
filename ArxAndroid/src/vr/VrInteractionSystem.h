@@ -14,14 +14,20 @@ namespace arxvr {
 class VrInteractionSystem {
 public:
 	VrImpactGateStatus updateHand(VrHand hand, const VrImpactSample & sample) {
+		if(!validHand(hand)) {
+			return VrImpactGateStatus::Invalid;
+		}
 		return state(hand).update(sample);
 	}
 
 	bool canImpact(VrHand hand) const {
-		return state(hand).canImpact();
+		return validHand(hand) && state(hand).canImpact();
 	}
 
 	bool consumeImpact(VrHand hand, VrImpactEvent & impact) {
+		if(!validHand(hand)) {
+			return false;
+		}
 		VrImpactEvent candidate;
 		if(!state(hand).consumeQualifiedImpact(candidate)) {
 			return false;
@@ -32,7 +38,9 @@ public:
 	}
 
 	void resetGesture(VrHand hand) {
-		state(hand).resetGesture();
+		if(validHand(hand)) {
+			state(hand).resetGesture();
+		}
 	}
 
 	void resetSession() {
@@ -50,6 +58,10 @@ public:
 	}
 
 private:
+	static constexpr bool validHand(VrHand hand) {
+		return hand == VrHand::Left || hand == VrHand::Right;
+	}
+
 	static constexpr std::size_t handIndex(VrHand hand) {
 		return hand == VrHand::Left ? 0u : 1u;
 	}
