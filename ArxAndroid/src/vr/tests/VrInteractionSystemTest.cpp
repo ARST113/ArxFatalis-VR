@@ -108,6 +108,23 @@ void heldObjectBecomesWeaponBearingSemanticEvent() {
 	       "held object identity should be retained as the weapon token");
 }
 
+void equippedWeaponUsesCommonImpactPipeline() {
+	arxvr::VrInteractionSystem system;
+	feedSwing(system, arxvr::VrHand::Right, 0, 0.f,
+	          arxvr::VrImpactSource::EquippedWeapon, 0xbeefu);
+	expect(system.canImpact(arxvr::VrHand::Right),
+	       "equipped weapon should qualify through the common hand gate");
+	arxvr::VrImpactEvent impact;
+	expect(system.consumeImpact(arxvr::VrHand::Right, impact),
+	       "equipped weapon should emit the common semantic impact event");
+	expect(impact.type == arxvr::VrImpactType::EquippedWeapon,
+	       "equipped weapon source should retain its semantic impact type");
+	expect(impact.sourceToken == 0xbeefu && impact.weaponToken == 0xbeefu,
+	       "equipped weapon identity should populate the generic weapon token");
+	expect(impact.hand == arxvr::VrHand::Right,
+	       "equipped weapon event should retain physical-hand identity");
+}
+
 void trackingLossCannotEmitSemanticImpact() {
 	arxvr::VrInteractionSystem system;
 	const auto lost = system.updateHand(
@@ -141,6 +158,7 @@ int main() {
 	semanticFistEventCarriesHandAndKinematics();
 	handsOwnIndependentQualificationState();
 	heldObjectBecomesWeaponBearingSemanticEvent();
+	equippedWeaponUsesCommonImpactPipeline();
 	trackingLossCannotEmitSemanticImpact();
 	invalidHandIdentityFailsClosed();
 
