@@ -18,6 +18,13 @@ ArxVrTrackingState g_trackingState = {};
 bool g_haveTrackingState = false;
 bool g_loggedFirstTrackingState = false;
 
+constexpr size_t kHapticQueueCapacity = 32;
+std::mutex g_hapticMutex;
+std::array<ArxVrHapticRequest, kHapticQueueCapacity> g_hapticQueue = {};
+size_t g_hapticReadIndex = 0;
+size_t g_hapticWriteIndex = 0;
+size_t g_hapticCount = 0;
+
 constexpr std::array<const char *, 7> kRequiredPakFiles = {
 	"data.pak",
 	"data2.pak",
@@ -57,6 +64,37 @@ int arxvr_read_tracking(ArxVrTrackingState * state) {
 		return 0;
 	}
 	*state = g_trackingState;
+	return 1;
+}
+
+void arxvrQueueHapticRequest(const ArxVrHapticRequest & request) {
+	if(request.version != ARXVR_HAPTIC_REQUEST_VERSION) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(g_hapticMutex);
+	// Haptics are transient feedback. If gameplay generates more than the host can
+	// consume, discard the oldest pulse instead of blocking the render thread.
+	if(g_hapticCount == kHapticQueueCapacity) {
+		g_hapticReadIndex = (g_hapticReadIndex + 1) % kHapticQueueCapacity;
+		--g_hapticCount;
+	}
+	g_hapticQueue[g_hapticWriteIndex] = request;
+	g_hapticWriteIndex = (g_hapticWriteIndex + 1) % kHapticQueueCapacity;
+	++g_hapticCount;
+}
+
+extern "C" __attribute__((visibility("default")))
+int arxvr_poll_haptic(ArxVrHapticRequest * request) {
+	if(!request) {
+		return 0;
+	}
+	std::lock_guard<std::mutex> lock(g_hapticMutex);
+	if(g_hapticCount == 0) {
+		return 0;
+	}
+	*request = g_hapticQueue[g_hapticReadIndex];
+	g_hapticReadIndex = (g_hapticReadIndex + 1) % kHapticQueueCapacity;
+	--g_hapticCount;
 	return 1;
 }
 
