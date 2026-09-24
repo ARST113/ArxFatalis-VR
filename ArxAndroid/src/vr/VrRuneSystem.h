@@ -285,8 +285,8 @@ private:
 			return;
 		}
 
-		if(!m_points.empty()) {
-			const float worldDistance = projectedWorldDistance(m_points.back(), point);
+		if(m_haveLastProjectedPoint) {
+			const float worldDistance = projectedWorldDistance(m_lastProjectedPoint, point);
 			if(!vrRuneFinite(worldDistance)) {
 				return;
 			}
@@ -295,6 +295,13 @@ private:
 			}
 			m_pathLength += worldDistance;
 		}
+
+		// Keep trajectory metrics tied to the most recent accepted physical
+		// sample even after the retained point buffer reaches capacity. Using the
+		// last stored vector element here would repeatedly measure from one stale
+		// point and inflate pathLength on long strokes.
+		m_lastProjectedPoint = point;
+		m_haveLastProjectedPoint = true;
 
 		if(m_points.size() < m_config.maximumPointCount) {
 			m_points.push_back(point);
@@ -334,6 +341,8 @@ private:
 		m_bounds = {};
 		m_pathLength = 0.f;
 		m_capacityLimited = false;
+		m_haveLastProjectedPoint = false;
+		m_lastProjectedPoint = {};
 	}
 
 	VrRuneConfig m_config{};
@@ -351,6 +360,8 @@ private:
 	VrRuneBounds2 m_bounds{};
 	float m_pathLength = 0.f;
 	bool m_capacityLimited = false;
+	bool m_haveLastProjectedPoint = false;
+	VrRunePoint2 m_lastProjectedPoint{};
 	VrRuneGesture m_pending{};
 };
 
