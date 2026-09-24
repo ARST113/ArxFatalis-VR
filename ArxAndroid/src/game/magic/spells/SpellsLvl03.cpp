@@ -36,6 +36,7 @@
 #include "graphics/particle/ParticleEffects.h"
 #include "graphics/particle/ParticleParams.h"
 
+#include "math/Angle.h"
 #include "math/RandomVector.h"
 
 #include "physics/Collisions.h"
@@ -44,6 +45,11 @@
 #include "scene/Object.h"
 
 #include "util/Cast.h"
+
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrSpellAim.h"
+#include "vr/VrSpellDirection.h"
+#endif
 
 
 SpeedSpell::SpeedTrail::SpeedTrail(VertexId vertex)
@@ -182,8 +188,26 @@ void FireballSpell::Launch() {
 	}
 	
 	float anglea = 0.f, angleb = 0.f;
+#if defined(ARXVR_ANDROID_BUILD)
+	bool vrHandAimed = false;
+	Vec3f vrHandDirection(0.f);
+	constexpr float vrPhysicalLaunchOffset = 18.f;
+#endif
 	if(caster == entities.player()) {
 		anglea = player.angle.getPitch(), angleb = player.angle.getYaw();
+#if defined(ARXVR_ANDROID_BUILD)
+		const arxvr::VrSpellAimRay vrAim = arxvr::vrSpellAimService().ray();
+		if(vrAim.valid) {
+			target = Vec3f(vrAim.origin.x, vrAim.origin.y, vrAim.origin.z);
+			vrHandDirection = Vec3f(vrAim.direction.x, vrAim.direction.y,
+			                            vrAim.direction.z);
+			const Anglef handAngles = unitVectorToAngle(vrHandDirection);
+			anglea = handAngles.getPitch();
+			angleb = handAngles.getYaw();
+			target += vrHandDirection * vrPhysicalLaunchOffset;
+			vrHandAimed = true;
+		}
+#endif
 	} else if(caster) {
 		Vec3f start = caster->pos;
 		if(caster->ioflags & IO_NPC) {
@@ -198,10 +222,22 @@ void FireballSpell::Launch() {
 	}
 	
 	Vec3f eSrc = target;
-	eSrc += angleToVectorXZ(angleb) * 60.f;
+#if defined(ARXVR_ANDROID_BUILD)
+	if(!vrHandAimed)
+#endif
+	{
+		eSrc += angleToVectorXZ(angleb) * 60.f;
+	}
 	eCurPos = eSrc;
 	
-	eMove = angleToVector(Anglef(anglea, angleb, 0.f)) * 80.f;
+#if defined(ARXVR_ANDROID_BUILD)
+	if(vrHandAimed) {
+		eMove = vrHandDirection * 80.f;
+	} else
+#endif
+	{
+		eMove = angleToVector(Anglef(anglea, angleb, 0.f)) * 80.f;
+	}
 	
 	ARX_SOUND_PlaySFX(g_snd.SPELL_FIRE_LAUNCH, &m_caster_pos);
 	m_snd_loop = ARX_SOUND_PlaySFX_loop(g_snd.SPELL_FIRE_WIND_LOOP, &m_caster_pos, 1.f);
@@ -221,19 +257,36 @@ void FireballSpell::Update() {
 		
 		float afAlpha = 0.f;
 		float afBeta = 0.f;
+#if defined(ARXVR_ANDROID_BUILD)
+		bool vrHandAimed = false;
+		Vec3f vrHandDirection(0.f);
+		constexpr float vrPhysicalLaunchOffset = 18.f;
+#endif
 		
 		Entity * caster = entities.get(m_caster);
 		if(caster == entities.player()) {
-			
-			afBeta = player.angle.getYaw();
-			afAlpha = player.angle.getPitch();
-			if(VertexGroupId chest = EERIE_OBJECT_GetGroup(caster->obj, "chest")) {
-				eCurPos = caster->obj->vertexWorldPositions[caster->obj->grouplist[chest].origin].v;
-			} else {
-				eCurPos = player.pos;
+#if defined(ARXVR_ANDROID_BUILD)
+			const arxvr::VrSpellAimRay vrAim = arxvr::vrSpellAimService().ray();
+			if(vrAim.valid) {
+				eCurPos = Vec3f(vrAim.origin.x, vrAim.origin.y, vrAim.origin.z);
+				vrHandDirection = Vec3f(vrAim.direction.x, vrAim.direction.y,
+				                            vrAim.direction.z);
+				eCurPos += vrHandDirection * vrPhysicalLaunchOffset;
+				eMove = vrHandDirection * 100.f;
+				vrHandAimed = true;
 			}
-			
-			eCurPos += angleToVectorXZ(afBeta) * 60.f;
+			if(!vrHandAimed)
+#endif
+			{
+				afBeta = player.angle.getYaw();
+				afAlpha = player.angle.getPitch();
+				if(VertexGroupId chest = EERIE_OBJECT_GetGroup(caster->obj, "chest")) {
+					eCurPos = caster->obj->vertexWorldPositions[caster->obj->grouplist[chest].origin].v;
+				} else {
+					eCurPos = player.pos;
+				}
+				eCurPos += angleToVectorXZ(afBeta) * 60.f;
+			}
 			
 		} else if(caster) {
 			
@@ -256,7 +309,12 @@ void FireballSpell::Update() {
 			
 		}
 		
-		eMove = angleToVector(Anglef(afAlpha, afBeta, 0.f)) * 100.f;
+#if defined(ARXVR_ANDROID_BUILD)
+		if(!vrHandAimed)
+#endif
+		{
+			eMove = angleToVector(Anglef(afAlpha, afBeta, 0.f)) * 100.f;
+		}
 	}
 	
 	eCurPos += eMove * (g_framedelay * 0.0045f);
@@ -378,6 +436,18 @@ void IceProjectileSpell::Launch() {
 	if(m_caster == EntityHandle_Player) {
 		target = player.pos + Vec3f(0.f, 160.f, 0.f);
 		angleb = player.angle.getYaw();
+#if defined(ARXVR_ANDROID_BUILD)
+		const arxvr::VrSpellAimRay vrAim = arxvr::vrSpellAimService().ray();
+		arxvr::VrSpellVector3 vrHorizontal;
+		if(arxvr::vrSpellHorizontalDirection(vrAim, vrHorizontal)) {
+			const Vec3f horizontal(vrHorizontal.x, vrHorizontal.y, vrHorizontal.z);
+			angleb = unitVectorToAngle(horizontal).getYaw();
+			// Ground corridor stays vertically anchored to the player while its
+			// horizontal origin and direction follow the casting hand.
+			target.x = vrAim.origin.x;
+			target.z = vrAim.origin.z;
+		}
+#endif
 	} else {
 		target = entities[m_caster]->pos;
 		angleb = entities[m_caster]->angle.getYaw();

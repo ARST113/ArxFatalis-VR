@@ -39,6 +39,7 @@
 #include "graphics/particle/ParticleTextures.h"
 #include "graphics/spells/Spells05.h"
 
+#include "math/Angle.h"
 #include "math/RandomVector.h"
 
 #include "physics/Collisions.h"
@@ -47,6 +48,11 @@
 #include "scene/Interactive.h"
 
 #include "util/Range.h"
+
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrSpellAim.h"
+#include "vr/VrSpellDirection.h"
+#endif
 
 
 RuneOfGuardingSpell::RuneOfGuardingSpell()
@@ -481,6 +487,10 @@ void PoisonProjectileSpell::Launch() {
 	
 	Vec3f srcPos(0.f);
 	float afBeta = 0.f;
+#if defined(ARXVR_ANDROID_BUILD)
+	bool vrHandAimed = false;
+	Vec3f vrHorizontalDirection(0.f);
+#endif
 	
 	Entity * caster = entities[m_caster];
 	
@@ -492,12 +502,29 @@ void PoisonProjectileSpell::Launch() {
 	if(m_caster == EntityHandle_Player) {
 		afBeta = player.angle.getYaw();
 		srcPos = m_hand_group ? m_hand_pos : player.pos;
+#if defined(ARXVR_ANDROID_BUILD)
+		const arxvr::VrSpellAimRay vrAim = arxvr::vrSpellAimService().ray();
+		arxvr::VrSpellVector3 vrHorizontal;
+		if(arxvr::vrSpellHorizontalDirection(vrAim, vrHorizontal)) {
+			vrHorizontalDirection = Vec3f(vrHorizontal.x, vrHorizontal.y, vrHorizontal.z);
+			afBeta = unitVectorToAngle(vrHorizontalDirection).getYaw();
+			srcPos = Vec3f(vrAim.origin.x, vrAim.origin.y, vrAim.origin.z);
+			vrHandAimed = true;
+		}
+#endif
 	} else {
 		afBeta = entities[m_caster]->angle.getYaw();
 		srcPos = m_hand_group ? m_hand_pos : entities[m_caster]->pos;
 	}
 	
-	srcPos += angleToVectorXZ(afBeta) * 90.f;
+#if defined(ARXVR_ANDROID_BUILD)
+	if(vrHandAimed) {
+		srcPos += vrHorizontalDirection * 18.f;
+	} else
+#endif
+	{
+		srcPos += angleToVectorXZ(afBeta) * 90.f;
+	}
 	
 	size_t uiNumber = glm::clamp(static_cast<unsigned int>(m_level), 1u, 5u);
 	m_projectiles.reserve(uiNumber);

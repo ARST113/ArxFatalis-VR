@@ -10,17 +10,8 @@ inline bool vrSpellHorizontalDirection(const VrSpellAimRay & ray,
 	if(!ray.valid || !vrSpellFinite(ray.direction)) {
 		return false;
 	}
-	const VrSpellVector3 value { ray.direction.x, 0.f, ray.direction.z };
-	const float lengthSquared = vrSpellLengthSquared(value);
-	if(!vrSpellFinite(lengthSquared) || lengthSquared <= 1.0e-8f) {
-		return false;
-	}
-	const float inverseLength = 1.f / std::sqrt(lengthSquared);
-	if(!vrSpellFinite(inverseLength)) {
-		return false;
-	}
-	horizontal = { value.x * inverseLength, 0.f, value.z * inverseLength };
-	return vrSpellFinite(horizontal);
+	return vrSpellNormalizeDirection(
+		{ ray.direction.x, 0.f, ray.direction.z }, horizontal);
 }
 
 } // namespace arxvr

@@ -36,11 +36,16 @@
 #include "graphics/particle/ParticleTextures.h"
 
 #include "gui/Interface.h"
+#include "math/Angle.h"
 #include "math/RandomVector.h"
 
 #include "scene/GameSound.h"
 #include "scene/Object.h"
 #include "scene/Scene.h"
+
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrSpellAim.h"
+#endif
 
 extern PlatformInstant SLID_START;
 bool bOldLookToggle;
@@ -567,8 +572,24 @@ void LightningStrikeSpell::Update() {
 	}
 	
 	if(m_caster == EntityHandle_Player) {
-		falpha = -player.angle.getPitch();
-		fBeta = player.angle.getYaw();
+#if defined(ARXVR_ANDROID_BUILD)
+		bool vrHandAimed = false;
+		const arxvr::VrSpellAimRay vrAim = arxvr::vrSpellAimService().ray();
+		if(vrAim.valid) {
+			const Vec3f vrHandDirection(vrAim.direction.x, vrAim.direction.y,
+			                            vrAim.direction.z);
+			const Anglef handAngles = unitVectorToAngle(vrHandDirection);
+			falpha = -handAngles.getPitch();
+			fBeta = handAngles.getYaw();
+			m_caster_pos = Vec3f(vrAim.origin.x, vrAim.origin.y, vrAim.origin.z);
+			vrHandAimed = true;
+		}
+		if(!vrHandAimed)
+#endif
+		{
+			falpha = -player.angle.getPitch();
+			fBeta = player.angle.getYaw();
+		}
 	} else {
 		fBeta = caster ? caster->angle.getYaw() : 0.f;
 		if(caster && entities.get(caster->targetinfo) && caster->targetinfo != m_caster) {
