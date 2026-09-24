@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'tools/arxvr_apply_phase4_live_integration.py'
+      - 'tools/arxvr_apply_phase4_live_integration_v2.py'
       - '.github/workflows/arxvr-phase4-integrate.yml'
 
 permissions:
@@ -21,13 +21,15 @@ jobs:
         with:
           ref: vr-foundation-phase1
           fetch-depth: 0
+      - name: Validate integration generator
+        run: python3 -m py_compile tools/arxvr_apply_phase4_live_integration_v2.py
       - name: Restore pre-integration ArxGame and apply guarded patch
         shell: bash
         run: |
           set -euxo pipefail
           BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
           git checkout "${BASE_COMMIT}" -- ArxAndroid/src/core/ArxGame.cpp
-          python3 tools/arxvr_apply_phase4_live_integration.py
+          python3 tools/arxvr_apply_phase4_live_integration_v2.py
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
@@ -42,6 +44,22 @@ jobs:
               data = data.replace(b"\n", b"\r\n")
           path.write_bytes(data)
           PY
+      - name: Validate generated C++ source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SOURCE=ArxAndroid/src/core/ArxGame.cpp
+          grep -F '#include "vr/VrHandState.h"' "$SOURCE"
+          grep -F 'VrImpactGateStatus::Qualified' "$SOURCE"
+          grep -F 'consumeQualifiedImpact' "$SOURCE"
+          if grep -Fq 'static arxvr::VrHandState g_vrRightHandImpact;\n"' "$SOURCE"; then
+            echo "Serialized Python literal found in generated C++" >&2
+            exit 1
+          fi
+          if grep -Fq '"\n    "' "$SOURCE"; then
+            echo "Quoted generator fragment found in generated C++" >&2
+            exit 1
+          fi
       - name: Commit live integration
         shell: bash
         run: |
@@ -55,5 +73,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add ArxAndroid/src/core/ArxGame.cpp
-          git commit -m "Fix live combat integration without newline churn"
+          git commit -m "Repair Phase 4 live combat integration"
           git push origin HEAD:vr-foundation-phase1
