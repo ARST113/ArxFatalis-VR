@@ -43,7 +43,7 @@ jobs:
           )"
           test "${BEFORE_CRLF}" -gt 0
           test "${AFTER_CRLF}" -gt "${BEFORE_CRLF}"
-          git diff --check -- ArxAndroid/src/physics/Projectile.cpp
+          git -c core.whitespace=cr-at-eol diff --check -- ArxAndroid/src/physics/Projectile.cpp
           grep -Fq 'vrEvaluateProjectileDefense(arxvr::vrDefenseRuntime()' ArxAndroid/src/physics/Projectile.cpp
           grep -Fq 'arxvrTryDeflectProjectile(projectile, original_pos);' ArxAndroid/src/physics/Projectile.cpp
           test "$(grep -Fc 'arxvrTryDeflectProjectile(projectile, original_pos);' ArxAndroid/src/physics/Projectile.cpp)" -eq 1
@@ -70,7 +70,7 @@ jobs:
           # CI workflow beside the canonical clean Android workflow.
           rm .github/workflows/arxvr-projectile-integrate.yml
           git add ArxAndroid/src/physics/Projectile.cpp .github/workflows/arxvr-projectile-integrate.yml
-          git diff --cached --check
+          git -c core.whitespace=cr-at-eol diff --cached --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'Wire live projectile deflection into Arx physics'
