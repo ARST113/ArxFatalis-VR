@@ -21,7 +21,7 @@ LOCAL_SRC_FILES := third/imgui/imgui_widgets.cpp \
                    third/imgui/imgui_draw.cpp \
                    third/imgui/imgui_tables.cpp \
                    third/imgui/imgui.cpp
-include $(BUILD_SHARED_LIBRARY)
+include $(BUILD_STATIC_LIBRARY)
 
 # Add freetype library
 include $(CLEAR_VARS)
@@ -73,7 +73,7 @@ LOCAL_SRC_FILES := third/freetype-2.13.0/src/autofit/autofit.c \
 LOCAL_CFLAGS += -W -Wall
 LOCAL_CFLAGS += "-DDARWIN_NO_CARBON"
 LOCAL_CFLAGS += "-DFT2_BUILD_LIBRARY"
-include $(BUILD_SHARED_LIBRARY)
+include $(BUILD_STATIC_LIBRARY)
 
 # Add demos library
 include $(CLEAR_VARS)
@@ -107,7 +107,7 @@ LOCAL_SRC_FILES := main.cpp \
                    demos/application.cpp
 
 LOCAL_LDLIBS := -llog -landroid -lGLESv3 -lEGL -lmediandk -laaudio
-LOCAL_STATIC_LIBRARIES := android_native_app_glue
+LOCAL_STATIC_LIBRARIES := android_native_app_glue imgui freetype
 LOCAL_SHARED_LIBRARIES := openxr_loader assimp imgui freetype
 include $(BUILD_SHARED_LIBRARY)
 
