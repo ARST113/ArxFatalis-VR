@@ -49,6 +49,9 @@
 #include "platform/profiler/Profiler.h"
 #include "scene/GameSound.h"
 #include "scene/Interactive.h"
+#if defined(ARXVR_ANDROID_BUILD)
+#include "vr/VrHaptics.h"
+#endif
 
 EntityDragStatus g_dragStatus = EntityDragStatus_Invalid;
 Entity * g_draggedEntity = nullptr;
@@ -517,6 +520,8 @@ void beginVrPhysicalDrag(Entity * entity, const Vec3f & handPosition,
 	                         + g_vrPhysicalHandOrientation
 	                           * g_vrPhysicalGripHandLocalOffset;
 	ARX_INTERACTIVE_Teleport(entity, holdPosition + g_vrPhysicalObjectOffset, true);
+	arxvrEmitHaptic(rightHand ? VrHapticHand::Right : VrHapticHand::Left,
+	                VrHapticEvent::Grab);
 	LogInfo << "ArxVR physical drag begin: target=" << entity->idString()
 	        << " snappedObject=(" << entity->pos.x << ", " << entity->pos.y << ", "
 	        << entity->pos.z << ") hand=(" << handPosition.x << ", "
@@ -736,6 +741,7 @@ void updateDraggedEntity() {
 		}
 
 		Entity * releasedEntity = g_vrPhysicalDragEntity;
+		const bool releasedRightHand = g_vrPhysicalRightHand;
 		const Vec3f releaseVelocity = recentVrPhysicalThrowVelocity();
 		const Vec3f handDirection = g_vrPhysicalHandDirection;
 		const float releaseSpeed = glm::length(releaseVelocity);
@@ -750,6 +756,8 @@ void updateDraggedEntity() {
 		releasedEntity->show = SHOW_FLAG_IN_SCENE;
 		releasedEntity->gameFlags &= ~GFLAG_NOCOMPUTATION;
 		setDraggedEntity(nullptr);
+		arxvrEmitHaptic(releasedRightHand ? VrHapticHand::Right : VrHapticHand::Left,
+		                VrHapticEvent::Release);
 
 		if(releasedEntity->obj && releasedEntity->obj->pbox) {
 			if(releaseSpeed >= kVrThrowSpeedThreshold) {
