@@ -1,4 +1,4 @@
-name: ArxVR Phase 4 integration helper
+name: ArxVR Phase 4/5 integration helper
 
 on:
   pull_request:
@@ -8,6 +8,7 @@ on:
       - 'tools/arxvr_apply_phase4_live_integration_v2.py'
       - 'tools/arxvr_apply_phase4_interaction_service.py'
       - 'tools/arxvr_apply_phase4_equipped_weapon.py'
+      - 'tools/arxvr_apply_phase5_two_hand_weapon.py'
       - '.github/workflows/arxvr-phase4-integrate.yml'
 
 permissions:
@@ -29,6 +30,7 @@ jobs:
           python3 -m py_compile tools/arxvr_apply_phase4_live_integration_v2.py
           python3 -m py_compile tools/arxvr_apply_phase4_interaction_service.py
           python3 -m py_compile tools/arxvr_apply_phase4_equipped_weapon.py
+          python3 -m py_compile tools/arxvr_apply_phase5_two_hand_weapon.py
 
       - name: Restore pre-integration ArxGame and apply guarded patch
         shell: bash
@@ -55,6 +57,7 @@ jobs:
           python3 tools/arxvr_apply_phase4_live_integration_v2.py
           python3 tools/arxvr_apply_phase4_interaction_service.py
           python3 tools/arxvr_apply_phase4_equipped_weapon.py
+          python3 tools/arxvr_apply_phase5_two_hand_weapon.py
 
           # Reconstruct the generated source while retaining the exact original
           # bytes for every unchanged logical line. Only inserted/replaced lines
@@ -117,6 +120,7 @@ jobs:
           SOURCE=ArxAndroid/src/core/ArxGame.cpp
           grep -F '#include "vr/VrInteractionSystem.h"' "$SOURCE"
           grep -F '#include "vr/VrWeaponContact.h"' "$SOURCE"
+          grep -F '#include "vr/VrWeaponSystem.h"' "$SOURCE"
           grep -F 'VrImpactGateStatus::Qualified' "$SOURCE"
           grep -F 'g_vrInteractions.updateHand(hand, sample)' "$SOURCE"
           grep -F 'g_vrInteractions.consumeImpact(hand, impact)' "$SOURCE"
@@ -124,6 +128,11 @@ jobs:
           grep -F 'updateVrEquippedWeaponCombat' "$SOURCE"
           grep -F 'VrImpactSource::EquippedWeapon' "$SOURCE"
           grep -F 'vrWeaponSegmentIntersectsAabb' "$SOURCE"
+          grep -F 'VrWeaponTrackingSample tracking' "$SOURCE"
+          grep -F 'g_vrWeaponSystem.update(profile, tracking)' "$SOURCE"
+          grep -F 'g_vrWeaponSystem.buildContactSegment(profile, weaponPose)' "$SOURCE"
+          grep -F 'secondaryWeaponGripActive' "$SOURCE"
+          grep -F 'rightHandOrientation * Vec3f(0.f, 1.f, 0.f)' "$SOURCE"
           if grep -Fq '#include "vr/VrHandState.h"' "$SOURCE"; then
             echo "Legacy direct VrHandState include found in generated C++" >&2
             exit 1
@@ -152,8 +161,8 @@ jobs:
           # file remains part of the PR diff. Re-generating an already-correct
           # ArxGame must therefore be a successful no-op, not a red CI check.
           if git diff --quiet -- "$SOURCE"; then
-            echo "Phase 4 live integration already matches generated output."
-            echo "ARXVR_PHASE4_DIRTY=0" >> "$GITHUB_ENV"
+            echo "Phase 4/5 live integration already matches generated output."
+            echo "ARXVR_PHASE45_DIRTY=0" >> "$GITHUB_ENV"
             exit 0
           fi
 
@@ -162,29 +171,29 @@ jobs:
           git diff --cached --name-only | grep -Fx "$SOURCE"
 
           # Audit the resulting source against the known pre-integration blob,
-          # not against the immediately preceding broken EOL-churn commit. The
-          # repair commit must necessarily reverse that historical churn once.
+          # not against an immediately preceding generated commit. This also
+          # guards against accidental whole-file EOL churn.
           git -c core.whitespace=cr-at-eol diff --cached "${BASE_COMMIT}" --check -- "$SOURCE"
           read ADDED DELETED _ < <(git diff --cached "${BASE_COMMIT}" --numstat -- "$SOURCE")
           test "$ADDED" != "-"
           test "$DELETED" != "-"
           CHANGED=$((ADDED + DELETED))
-          echo "Semantic Phase 4 live integration diff vs ${BASE_COMMIT}: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
-          test "$CHANGED" -le 900
+          echo "Semantic Phase 4/5 live integration diff vs ${BASE_COMMIT}: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+          test "$CHANGED" -le 1100
           git diff --cached "${BASE_COMMIT}" --stat -- "$SOURCE"
-          echo "ARXVR_PHASE4_DIRTY=1" >> "$GITHUB_ENV"
+          echo "ARXVR_PHASE45_DIRTY=1" >> "$GITHUB_ENV"
 
       - name: Commit generated live integration
-        if: env.ARXVR_PHASE4_DIRTY == '1'
+        if: env.ARXVR_PHASE45_DIRTY == '1'
         shell: bash
         run: |
           set -euxo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Route equipped melee through VR interaction service"
+          git commit -m "Wire two-hand weapon constraints into live melee"
 
       - name: Push generated live integration
-        if: env.ARXVR_PHASE4_DIRTY == '1'
+        if: env.ARXVR_PHASE45_DIRTY == '1'
         shell: bash
         run: |
           set -euxo pipefail
