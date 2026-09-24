@@ -83,6 +83,20 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
+      - name: Run deterministic VR strike classifier tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TEST_BIN="${RUNNER_TEMP}/arxvr-strike-classifier-test"
+          g++ \
+            -std=c++17 \
+            -Wall -Wextra -Wpedantic -Werror \
+            -O2 \
+            -I "${GITHUB_WORKSPACE}/ArxAndroid/src" \
+            "${GITHUB_WORKSPACE}/ArxAndroid/src/vr/tests/VrStrikeClassifierTest.cpp" \
+            -o "${TEST_BIN}"
+          "${TEST_BIN}"
+
       - name: Restore exact source dependencies
         shell: bash
         run: |
@@ -273,7 +287,7 @@ jobs:
             echo "- ABI: \`arm64-v8a\` only"
             echo "- Host: full \`ndk-build -B\`"
             echo "- Engine: clean CMake/Gradle build"
-            echo "- Verified: required native libraries, exported ArxVR bridge symbols, VR assets and package id"
+            echo "- Verified: deterministic strike-classifier tests, required native libraries, exported ArxVR bridge symbols, VR assets and package id"
             echo
             echo "The CI APK intentionally does not bundle proprietary Arx Fatalis PAK files."
             echo "Physical PICO QA still requires valid game data in the app's external files directory."
