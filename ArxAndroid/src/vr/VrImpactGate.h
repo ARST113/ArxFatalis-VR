@@ -33,8 +33,17 @@ struct VrImpactSample {
 	// Stable identity inside a source category. For held/equipped items this can
 	// be an entity handle converted to an integer; fists can use zero.
 	std::uint64_t sourceToken = 0;
+	// Equipped weapons can provide a class-specific strike profile without
+	// exposing mutable per-hand classifier state to gameplay code. The override
+	// is sampled only at a source/profile boundary and remains stable for the
+	// lifetime of that source token.
+	VrStrikeProfile profileOverride{};
+	// Physical mass is transport-neutral metadata carried into VrImpactEvent.
+	// The hand-state boundary sanitizes malformed values before publication.
+	float effectiveMass = 1.f;
 	bool gestureActive = false;
 	bool trackingValid = true;
+	bool useProfileOverride = false;
 };
 
 // Turns raw tracked motion into a single semantic impact opportunity while

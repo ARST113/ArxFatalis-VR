@@ -37,10 +37,21 @@ public:
 		: m_gate(vrFistStrikeProfile()) { }
 
 	VrImpactGateStatus update(const VrImpactSample & sample) {
-		const bool profileChanged = sample.source != m_profileSource;
+		// A profile override is an immutable property of one semantic source
+		// token. A new equipped weapon can therefore change its qualification
+		// thresholds without exposing or resetting the per-hand gate itself.
+		const bool profileChanged = sample.source != m_profileSource
+		                         || sample.useProfileOverride != m_profileOverrideActive
+		                         || (sample.useProfileOverride
+		                             && sample.sourceToken != m_profileSourceToken);
 		if(profileChanged) {
-			m_gate.transitionProfile(vrImpactProfileForSource(sample.source));
+			const VrStrikeProfile profile = sample.useProfileOverride
+			                              ? sample.profileOverride
+			                              : vrImpactProfileForSource(sample.source);
+			m_gate.transitionProfile(profile);
 			m_profileSource = sample.source;
+			m_profileSourceToken = sample.sourceToken;
+			m_profileOverrideActive = sample.useProfileOverride;
 		}
 
 		const bool sourceChanged = sample.source != m_kinematicSource
@@ -53,10 +64,12 @@ public:
 		if(sample.trackingValid) {
 			updateTerminalKinematics(sample.motion, sourceChanged || gestureStarted);
 			m_latestMotion = sample.motion;
+			m_latestEffectiveMass = sanitizeEffectiveMass(sample.effectiveMass);
 			m_haveLatestMotion = true;
 		} else {
 			m_haveLatestMotion = false;
 			m_haveTerminalVelocity = false;
+			m_latestEffectiveMass = 1.f;
 		}
 
 		const VrImpactGateStatus status = m_gate.update(sample);
@@ -87,6 +100,7 @@ public:
 		candidate.motion = m_latestMotion;
 		candidate.metrics = m_gate.metrics();
 		candidate.position = { m_latestMotion.x, m_latestMotion.y, m_latestMotion.z };
+		candidate.effectiveMass = m_latestEffectiveMass;
 		if(m_haveTerminalVelocity) {
 			candidate.linearVelocity = m_terminalVelocity;
 			const float speed = vectorLength(m_terminalVelocity);
@@ -121,11 +135,14 @@ public:
 		m_gate.transitionProfile(vrFistStrikeProfile());
 		m_gate.resetSession();
 		m_profileSource = VrImpactSource::None;
+		m_profileSourceToken = 0;
+		m_profileOverrideActive = false;
 		m_kinematicSource = VrImpactSource::None;
 		m_kinematicSourceToken = 0;
 		m_kinematicGestureActive = false;
 		m_latestMotion = VrMotionSample{};
 		m_terminalVelocity = VrImpactVector3{};
+		m_latestEffectiveMass = 1.f;
 		m_haveLatestMotion = false;
 		m_haveTerminalVelocity = false;
 	}
@@ -160,6 +177,21 @@ private:
 		                 + vector.z * vector.z);
 	}
 
+	static float sanitizeEffectiveMass(float mass) {
+		if(!std::isfinite(mass) || mass <= 0.f) {
+			return 1.f;
+		}
+		// Keep malformed gameplay data from producing pathological impact-energy
+		// values while retaining a broad range for future heavy props/weapons.
+		if(mass < 0.05f) {
+			return 0.05f;
+		}
+		if(mass > 20.f) {
+			return 20.f;
+		}
+		return mass;
+	}
+
 	void updateTerminalKinematics(const VrMotionSample & motion, bool resetSegment) {
 		if(resetSegment || !m_haveLatestMotion
 		   || motion.timestampUs <= m_latestMotion.timestampUs) {
@@ -190,11 +222,14 @@ private:
 
 	VrImpactGate m_gate;
 	VrImpactSource m_profileSource = VrImpactSource::None;
+	std::uint64_t m_profileSourceToken = 0;
+	bool m_profileOverrideActive = false;
 	VrImpactSource m_kinematicSource = VrImpactSource::None;
 	std::uint64_t m_kinematicSourceToken = 0;
 	bool m_kinematicGestureActive = false;
 	VrMotionSample m_latestMotion{};
 	VrImpactVector3 m_terminalVelocity{};
+	float m_latestEffectiveMass = 1.f;
 	bool m_haveLatestMotion = false;
 	bool m_haveTerminalVelocity = false;
 };
