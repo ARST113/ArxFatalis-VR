@@ -174,6 +174,34 @@ void testOverlappingDefendedStrikesKeepIndependentLatches() {
 	assert(!runtime.defenseLatched(2301, 2501, firstExpired));
 }
 
+void testLatestDefenseTypeFollowsMostRecentOverlappingStrike() {
+	VrDefenseRuntime runtime;
+	const std::uint64_t parryStart = 7000000;
+	const std::uint64_t parryImpact = 7010000;
+	runtime.publishDefenderWeapon(2600, makeDefenderWeapon(), parryImpact);
+	const VrIncomingContact parryHit = makeIncomingSweep(
+		runtime, 2700, 2800, parryStart, parryImpact);
+	VrDefenseEvent parryEvent;
+	assert(runtime.evaluatePlayerDefense(2700, 2900, parryHit, 2.f, parryEvent));
+	assert(parryEvent.type == VrDefenseEventType::WeaponParry);
+	assert(runtime.latchedDefenseType() == VrDefenseEventType::WeaponParry);
+
+	// Move to a later shield-only defense while the parry strike latch remains
+	// alive. The query must report the newest event without deleting the older key.
+	runtime.clearDefenderWeapon();
+	const std::uint64_t blockStart = 7160000;
+	const std::uint64_t blockImpact = 7170000;
+	runtime.publishShield(2601, VrShieldProfile{}, makeShieldPose(), blockImpact);
+	const VrIncomingContact blockHit = makeIncomingSweep(
+		runtime, 2701, 2801, blockStart, blockImpact);
+	VrDefenseEvent blockEvent;
+	assert(runtime.evaluatePlayerDefense(2701, 2901, blockHit, 2.f, blockEvent));
+	assert(blockEvent.type == VrDefenseEventType::ShieldBlock);
+	assert(runtime.latchedDefenseType() == VrDefenseEventType::ShieldBlock);
+	assert(runtime.defenseLatched(2700, 2900, blockImpact + 1000));
+	assert(runtime.defenseLatched(2701, 2901, blockImpact + 1000));
+}
+
 } // namespace
 
 int main() {
@@ -183,5 +211,6 @@ int main() {
 	testStrikeLatchOnlySuppressesMatchingStrike();
 	testTrackingDiscontinuityCannotFabricateDefense();
 	testOverlappingDefendedStrikesKeepIndependentLatches();
+	testLatestDefenseTypeFollowsMostRecentOverlappingStrike();
 	return 0;
 }
