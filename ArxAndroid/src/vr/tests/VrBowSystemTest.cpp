@@ -75,6 +75,7 @@ void drawUsesBothHandsAndClampsEnergy() {
 
 void qualifiedReleaseEmitsOneShotEvent() {
 	arxvr::VrBowConfig config;
+	config.nockAcquireDistance = 6.f;
 	config.maximumDrawDistance = 50.f;
 	config.minimumReleaseDraw = 10.f;
 	config.arrowSpawnOffset = 6.f;
@@ -110,6 +111,7 @@ void qualifiedReleaseEmitsOneShotEvent() {
 
 void shortReleaseCancelsWithoutLaunching() {
 	arxvr::VrBowConfig config;
+	config.nockAcquireDistance = 6.f;
 	config.minimumReleaseDraw = 12.f;
 	arxvr::VrBowSystem system(config);
 	auto sample = baseSample(0x401u, 1000u);
@@ -127,6 +129,34 @@ void shortReleaseCancelsWithoutLaunching() {
 	expect(!system.consumeRelease(release) && !release.valid,
 	       "an accidental short draw should cancel instead of firing");
 	expect(!system.nocked(), "cancelled short release should leave bow unnocked");
+}
+
+void nockAssistCannotBecomeFreeShotEnergy() {
+	arxvr::VrBowConfig invalid;
+	invalid.nockAcquireDistance = 16.f;
+	invalid.minimumReleaseDraw = 10.f;
+	expect(!arxvr::vrBowConfigValid(invalid),
+	       "release threshold inside nock-assist radius must be rejected as unsafe config");
+
+	arxvr::VrBowSystem failClosed(invalid);
+	auto sample = baseSample(0x451u, 1000u);
+	sample.stringPosition = { 0.f, 0.f, -10.f };
+	sample.stringGripPressed = true;
+	expect(!failClosed.update(sample).valid && !failClosed.nocked(),
+	       "unsafe nock/release geometry must fail closed before acquiring the string");
+
+	arxvr::VrBowSystem defaults;
+	sample = baseSample(0x452u, 2000u);
+	sample.stringPosition = { 0.f, 0.f, -15.f };
+	sample.stringGripPressed = true;
+	expect(defaults.update(sample).nocked,
+	       "default assist radius should still allow deliberate edge-near nocking");
+	sample.timestampUs = 3000u;
+	sample.stringGripPressed = false;
+	defaults.update(sample);
+	arxvr::VrBowRelease release;
+	expect(!defaults.consumeRelease(release),
+	       "releasing inside the default assist radius must not create a free shot");
 }
 
 void trackingLossAndTimestampRegressionFailClosed() {
@@ -198,6 +228,7 @@ int main() {
 	drawUsesBothHandsAndClampsEnergy();
 	qualifiedReleaseEmitsOneShotEvent();
 	shortReleaseCancelsWithoutLaunching();
+	nockAssistCannotBecomeFreeShotEnergy();
 	trackingLossAndTimestampRegressionFailClosed();
 	weaponIdentityAndMalformedPoseResetState();
 	nearVerticalBowPoseBuildsStableBasis();
