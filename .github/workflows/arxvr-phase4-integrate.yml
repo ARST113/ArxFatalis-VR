@@ -10,6 +10,7 @@ on:
       - 'tools/arxvr_apply_phase4_equipped_weapon.py'
       - 'tools/arxvr_apply_phase5_two_hand_weapon.py'
       - 'tools/arxvr_apply_phase5_live_defense.py'
+      - 'tools/arxvr_apply_phase5_multistrike_latches.py'
       - '.github/workflows/arxvr-phase4-integrate.yml'
 
 permissions:
@@ -33,6 +34,7 @@ jobs:
           python3 -m py_compile tools/arxvr_apply_phase4_equipped_weapon.py
           python3 -m py_compile tools/arxvr_apply_phase5_two_hand_weapon.py
           python3 -m py_compile tools/arxvr_apply_phase5_live_defense.py
+          python3 -m py_compile tools/arxvr_apply_phase5_multistrike_latches.py
 
       - name: Restore pre-integration ArxGame and apply guarded patches
         shell: bash
@@ -61,6 +63,7 @@ jobs:
           python3 tools/arxvr_apply_phase4_equipped_weapon.py
           python3 tools/arxvr_apply_phase5_two_hand_weapon.py
           python3 tools/arxvr_apply_phase5_live_defense.py
+          python3 tools/arxvr_apply_phase5_multistrike_latches.py
 
           # Reconstruct the generated ArxGame source while retaining the exact
           # original bytes for every unchanged logical line. Equipment.cpp is
@@ -122,6 +125,7 @@ jobs:
           set -euxo pipefail
           GAME=ArxAndroid/src/core/ArxGame.cpp
           EQUIP=ArxAndroid/src/game/Equipment.cpp
+          RUNTIME=ArxAndroid/src/vr/VrDefenseRuntime.h
           grep -F '#include "vr/VrInteractionSystem.h"' "$GAME"
           grep -F '#include "vr/VrWeaponContact.h"' "$GAME"
           grep -F '#include "vr/VrWeaponSystem.h"' "$GAME"
@@ -150,6 +154,13 @@ jobs:
           grep -F 'VrHapticEvent::Parry' "$EQUIP"
           grep -F 'VrHapticEvent::Block' "$EQUIP"
           grep -F 'ARX_SOUND_PlayCollision(attackerMaterial, "metal"' "$EQUIP"
+          grep -F 'std::array<DefenseLatch, 8> m_latches{};' "$RUNTIME"
+          grep -F 'for(const DefenseLatch & latch : m_latches)' "$RUNTIME"
+          grep -F 'DefenseLatch * target = nullptr;' "$RUNTIME"
+          if grep -Fq 'DefenseLatch m_latch{};' "$RUNTIME"; then
+            echo "Legacy single defense latch remains in generated runtime" >&2
+            exit 1
+          fi
           if grep -Fq 'vrShieldBlocked = arxvr::vrDefenseRuntime().sampleShieldBlock' "$EQUIP"; then
             echo "Legacy shield-only sampling path found in generated Equipment.cpp" >&2
             exit 1
@@ -182,21 +193,22 @@ jobs:
           BASE_COMMIT=0e52d4cde5b228fcfc23f7730bb22b9919bd173d
           GAME=ArxAndroid/src/core/ArxGame.cpp
           EQUIP=ArxAndroid/src/game/Equipment.cpp
+          RUNTIME=ArxAndroid/src/vr/VrDefenseRuntime.h
 
-          if git diff --quiet -- "$GAME" "$EQUIP"; then
+          if git diff --quiet -- "$GAME" "$EQUIP" "$RUNTIME"; then
             echo "Phase 4/5 live integration already matches generated output."
             echo "ARXVR_PHASE45_DIRTY=0" >> "$GITHUB_ENV"
             exit 0
           fi
 
-          git add "$GAME" "$EQUIP"
+          git add "$GAME" "$EQUIP" "$RUNTIME"
           CHANGED_FILES="$(git diff --cached --name-only)"
           test -n "$CHANGED_FILES"
           while IFS= read -r changed; do
-            test "$changed" = "$GAME" || test "$changed" = "$EQUIP"
+            test "$changed" = "$GAME" || test "$changed" = "$EQUIP" || test "$changed" = "$RUNTIME"
           done <<< "$CHANGED_FILES"
 
-          git -c core.whitespace=cr-at-eol diff --cached --check -- "$GAME" "$EQUIP"
+          git -c core.whitespace=cr-at-eol diff --cached --check -- "$GAME" "$EQUIP" "$RUNTIME"
 
           if ! git diff --cached --quiet -- "$GAME"; then
             read ADDED DELETED _ < <(git diff --cached "${BASE_COMMIT}" --numstat -- "$GAME")
@@ -216,7 +228,16 @@ jobs:
             test "$CHANGED" -le 180
           fi
 
-          git diff --cached --stat -- "$GAME" "$EQUIP"
+          if ! git diff --cached --quiet -- "$RUNTIME"; then
+            read ADDED DELETED _ < <(git diff --cached --numstat -- "$RUNTIME")
+            test "$ADDED" != "-"
+            test "$DELETED" != "-"
+            CHANGED=$((ADDED + DELETED))
+            echo "Defense runtime latch diff: +${ADDED}/-${DELETED} (${CHANGED} changed lines)"
+            test "$CHANGED" -le 120
+          fi
+
+          git diff --cached --stat -- "$GAME" "$EQUIP" "$RUNTIME"
           echo "ARXVR_PHASE45_DIRTY=1" >> "$GITHUB_ENV"
 
       - name: Commit generated live integration
@@ -226,7 +247,7 @@ jobs:
           set -euxo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Wire live shield and weapon parry defense"
+          git commit -m "Harden live defense strike latching"
 
       - name: Push generated live integration
         if: env.ARXVR_PHASE45_DIRTY == '1'
