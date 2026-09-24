@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +30,12 @@ struct VrPublishedShield {
 	std::uint64_t timestampUs = 0;
 	bool active = false;
 };
+
+inline std::uint64_t vrDefenseNowMicros() {
+	const auto count = std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+	return count > 0 ? static_cast<std::uint64_t>(count) : 1u;
+}
 
 class VrDefenseRuntime {
 public:
@@ -147,6 +154,17 @@ public:
 		}
 		return m_defense.evaluateShieldBlock(m_shield.profile, m_shield.pose,
 		                                     incoming, event);
+	}
+
+	bool sampleShieldBlock(std::uint64_t sourceToken,
+	                       std::uint64_t actionToken,
+	                       const VrImpactVector3 & position,
+	                       std::uint64_t timestampUs,
+	                       VrDefenseEvent & event) {
+		event = VrDefenseEvent{};
+		VrIncomingContact incoming;
+		return sampleIncomingWeapon(sourceToken, actionToken, position, timestampUs, incoming)
+		    && evaluateShieldBlock(incoming, event);
 	}
 
 	void resetSession() {
