@@ -67,6 +67,11 @@ void rejectsDegenerateAndNonFiniteSamples() {
 	sample.forward = { 0.f, 0.f, 0.f };
 	assert(!service.update(sample).valid);
 
+	// Values below the direction epsilon must not turn controller noise into
+	// a normalized but effectively arbitrary spell launch direction.
+	sample.forward = { 1.0e-5f, 0.f, 0.f };
+	assert(!service.update(sample).valid);
+
 	sample.forward = { 0.f, 0.f, 1.f };
 	sample.origin.x = std::numeric_limits<float>::quiet_NaN();
 	assert(!service.update(sample).valid);
@@ -74,6 +79,24 @@ void rejectsDegenerateAndNonFiniteSamples() {
 	sample.origin = { 0.f, 0.f, 0.f };
 	sample.forward.z = std::numeric_limits<float>::infinity();
 	assert(!service.update(sample).valid);
+
+	// Finite components can still overflow length-squared. This must fail
+	// closed instead of publishing NaNs after normalization.
+	const float maximum = std::numeric_limits<float>::max();
+	sample.forward = { maximum, maximum, maximum };
+	assert(!service.update(sample).valid);
+	assert(!service.ray().valid);
+}
+
+void acceptsSmallButUsableDirectionAboveThreshold() {
+	arxvr::VrSpellAimService service;
+	arxvr::VrSpellAimSample sample;
+	sample.trackingValid = true;
+	sample.origin = { -8.f, 13.f, 21.f };
+	sample.forward = { 0.f, 0.f, 2.0e-4f };
+	const arxvr::VrSpellAimRay ray = service.update(sample);
+	assert(ray.valid);
+	assert(near(ray.direction.z, 1.f));
 }
 
 void explicitClearInvalidatesPublishedAim() {
@@ -94,6 +117,7 @@ int main() {
 	acceptsObliqueAndVerticalPhysicalAim();
 	trackingLossClearsAPreviouslyValidRay();
 	rejectsDegenerateAndNonFiniteSamples();
+	acceptsSmallButUsableDirectionAboveThreshold();
 	explicitClearInvalidatesPublishedAim();
 	return 0;
 }
