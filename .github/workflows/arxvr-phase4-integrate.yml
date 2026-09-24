@@ -139,12 +139,25 @@ jobs:
           grep -F 'secondaryWeaponGripActive' "$GAME"
           grep -F 'rightHandOrientation * Vec3f(0.f, 1.f, 0.f)' "$GAME"
           grep -F 'arxvr::vrDefenseRuntime().publishShield(' "$GAME"
+          grep -F 'arxvr::vrDefenseRuntime().publishDefenderWeapon(' "$GAME"
+          grep -F 'arxvr::vrDefenseRuntime().clearDefenderWeapon();' "$GAME"
           grep -F 'equippedShield && haveLeftHand && !leftDragging' "$GAME"
           grep -F 'arxvr::vrDefenseRuntime().resetSession();' "$GAME"
           grep -F '#include "vr/VrDefenseRuntime.h"' "$EQUIP"
-          grep -F 'vrShieldBlocked = arxvr::vrDefenseRuntime().sampleShieldBlock' "$EQUIP"
-          grep -F 'arxvrEmitHaptic(VrHapticHand::Left, VrHapticEvent::Block, strength);' "$EQUIP"
-          grep -F 'if(target == entities.player() && vrShieldBlocked)' "$EQUIP"
+          grep -F 'vrHaveIncomingWeapon = arxvr::vrDefenseRuntime().sampleIncomingWeapon' "$EQUIP"
+          grep -F 'vrDefense.defenseLatched(' "$EQUIP"
+          grep -F 'vrDefense.evaluatePlayerDefense(' "$EQUIP"
+          grep -F 'VrHapticEvent::Parry' "$EQUIP"
+          grep -F 'VrHapticEvent::Block' "$EQUIP"
+          grep -F 'ARX_SOUND_PlayCollision(attackerMaterial, "metal"' "$EQUIP"
+          if grep -Fq 'vrShieldBlocked = arxvr::vrDefenseRuntime().sampleShieldBlock' "$EQUIP"; then
+            echo "Legacy shield-only sampling path found in generated Equipment.cpp" >&2
+            exit 1
+          fi
+          if grep -Fq 'if(target == entities.player() && vrShieldBlocked)' "$EQUIP"; then
+            echo "Legacy shield-only target gate found in generated Equipment.cpp" >&2
+            exit 1
+          fi
           if grep -Fq '#include "vr/VrHandState.h"' "$GAME"; then
             echo "Legacy direct VrHandState include found in generated C++" >&2
             exit 1
@@ -213,7 +226,7 @@ jobs:
           set -euxo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Wire tracked shield blocks into live NPC melee"
+          git commit -m "Wire live shield and weapon parry defense"
 
       - name: Push generated live integration
         if: env.ARXVR_PHASE45_DIRTY == '1'
