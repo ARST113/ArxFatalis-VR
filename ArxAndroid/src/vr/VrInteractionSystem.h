@@ -49,14 +49,6 @@ public:
 		}
 	}
 
-	VrHandState & handState(VrHand hand) {
-		return state(hand);
-	}
-
-	const VrHandState & handState(VrHand hand) const {
-		return state(hand);
-	}
-
 private:
 	static constexpr bool validHand(VrHand hand) {
 		return hand == VrHand::Left || hand == VrHand::Right;
