@@ -31,6 +31,10 @@ jobs:
             echo "No integration diff produced" >&2
             exit 1
           fi
+          # The guarded generator operates on an old large source file. Remove
+          # whitespace-only lines introduced at replacement boundaries before
+          # the repository-wide diff check; code content is unchanged.
+          sed -i 's/^[[:space:]]\+$//' ArxAndroid/src/core/ArxGame.cpp
           git diff --check
           git diff --stat
           git config user.name github-actions[bot]
