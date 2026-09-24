@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -74,7 +75,10 @@ public:
 	VrMotionSampleStatus update(const VrMotionSample & sample,
 	                            const VrStrikeProfile & profile) {
 		if(!isFinite(sample)) {
-			clear();
+			m_count = 0;
+			m_metrics = VrStrikeMetrics{};
+			m_armed = false;
+			m_rearmNotBeforeUs = saturatingAdd(sample.timestampUs, profile.cooldownUs);
 			return VrMotionSampleStatus::Invalid;
 		}
 
