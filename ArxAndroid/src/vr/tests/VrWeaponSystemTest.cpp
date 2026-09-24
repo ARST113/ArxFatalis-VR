@@ -81,16 +81,42 @@ void twoHandedGripUsesHysteresisAndReleasesCleanly() {
 	expect(system.update(profile, sample).twoHanded,
 	       "near secondary grip should engage constraint");
 
-	// 15 units from the expected anchor is outside engage radius but inside the
-	// release radius; an already engaged grip should stay stable here.
-	sample.secondaryPosition = { 15.f, 0.f, -28.f };
+	// Once latched, release distance is measured against the constrained weapon
+	// pose, so moving the hands farther apart must exceed the release radius
+	// around the profile-defined secondary-grip distance.
+	sample.secondaryPosition = { 0.f, 0.f, -43.f };
 	expect(system.update(profile, sample).twoHanded,
 	       "engaged two-hand grip should remain latched inside release hysteresis");
 
-	sample.secondaryPosition = { 25.f, 0.f, -28.f };
+	sample.secondaryPosition = { 0.f, 0.f, -53.f };
 	expect(!system.update(profile, sample).twoHanded,
 	       "off-hand moving beyond release radius should return to one-hand mode");
 	expect(!system.twoHanded(), "released constraint should update persistent state");
+}
+
+void latchedGripFollowsBothHandsInsteadOfPrimaryWristAim() {
+	const auto profile = arxvr::vrDefaultWeaponProfile(arxvr::VrWeaponClass::TwoHanded);
+	arxvr::VrWeaponSystem system;
+	auto sample = baseSample(0x351u);
+	sample.secondaryPosition = { 0.f, 0.f, -28.f };
+	sample.secondaryValid = true;
+	sample.secondaryGripPressed = true;
+	const arxvr::VrWeaponPose engaged = system.update(profile, sample);
+	expect(engaged.twoHanded, "control pose should engage the secondary grip");
+
+	// Rotate only the dominant controller's pointing direction by ninety degrees
+	// while both physical hand positions remain in a valid two-hand arrangement.
+	// A latched weapon should remain constrained by the hands rather than drop
+	// because the one-hand wrist-derived secondary anchor moved elsewhere.
+	sample.primaryForward = { 4.f, 0.f, 0.f };
+	const arxvr::VrWeaponPose constrained = system.update(profile, sample);
+	expect(constrained.twoHanded && system.twoHanded(),
+	       "latched grip should not release from dominant-wrist aim changes alone");
+	expect(near(constrained.forward.x, 0.f) && near(constrained.forward.y, 0.f)
+	       && constrained.forward.z > 0.99f,
+	       "latched weapon forward should continue to follow the vector between hands");
+	expect(near(constrained.secondaryGripAnchor.z, -28.f, 0.01f),
+	       "reported secondary anchor should be rebuilt from the final constrained pose");
 }
 
 void weaponSwapCannotCarrySecondaryConstraintAcrossItems() {
@@ -161,6 +187,7 @@ int main() {
 	oneHandedWeaponFollowsTrackedPrimaryPose();
 	twoHandedGripEngagesNearProfileAnchor();
 	twoHandedGripUsesHysteresisAndReleasesCleanly();
+	latchedGripFollowsBothHandsInsteadOfPrimaryWristAim();
 	weaponSwapCannotCarrySecondaryConstraintAcrossItems();
 	trackingLossAndDegenerateHandsFailClosed();
 	nearVerticalControllerStillBuildsStableBasis();
