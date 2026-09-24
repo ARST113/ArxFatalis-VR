@@ -13,17 +13,18 @@ GAME = Path("ArxAndroid/src/core/ArxGame.cpp")
 SPELL = Path("ArxAndroid/src/game/magic/spells/SpellsLvl01.cpp")
 
 
-def eol_for(data: bytes) -> bytes:
-    return b"\r\n" if b"\r\n" in data else b"\n"
-
-
 def replace_once(data: bytes, old_lf: str, new_lf: str, label: str) -> bytes:
-    eol = eol_for(data)
-    old = old_lf.replace("\n", eol.decode()).encode()
-    new = new_lf.replace("\n", eol.decode()).encode()
-    count = data.count(old)
-    if count != 1:
-        raise SystemExit(f"{label}: expected exactly one anchor, found {count}")
+    matches = []
+    for eol in ("\n", "\r\n"):
+        old = old_lf.replace("\n", eol).encode()
+        count = data.count(old)
+        if count:
+            matches.append((eol, old, count))
+    total = sum(count for _, _, count in matches)
+    if total != 1:
+        raise SystemExit(f"{label}: expected exactly one anchor, found {total}")
+    eol, old, _ = matches[0]
+    new = new_lf.replace("\n", eol).encode()
     return data.replace(old, new, 1)
 
 
