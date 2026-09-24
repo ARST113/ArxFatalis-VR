@@ -43,6 +43,43 @@ void deliberatePunchQualifies() {
 	expect(!classifier.canStrike(profile), "consumed strike must disarm classifier");
 }
 
+void deceleratingFollowThroughQualifies() {
+	arxvr::VrStrikeClassifier classifier;
+	const auto profile = arxvr::vrFistStrikeProfile();
+	classifier.update(sample(0.f, 0.f, 0), profile);
+	classifier.update(sample(2.4f, 0.f, 20000), profile);   // 120 units/s
+	classifier.update(sample(7.f, 0.f, 40000), profile);    // 230 units/s
+	classifier.update(sample(12.f, 0.f, 60000), profile);   // 250 units/s peak
+	classifier.update(sample(13.f, 0.f, 80000), profile);   // 50 units/s follow-through
+	const auto & metrics = classifier.metrics();
+	expect(metrics.terminalSpeed < profile.minTerminalSpeed,
+	       "fixture contact should occur below the direct-contact speed threshold");
+	expect(metrics.terminalSpeed >= profile.minFollowThroughSpeed,
+	       "fixture should retain meaningful motion after the velocity peak");
+	expect(metrics.terminalSpeed
+	       <= metrics.peakSpeed * profile.maxFollowThroughToPeakRatio,
+	       "fixture should represent controlled deceleration from the swing peak");
+	expect(classifier.canStrike(profile),
+	       "contact during deliberate post-peak follow-through should qualify");
+}
+
+void nearlyStoppedFollowThroughIsRejected() {
+	arxvr::VrStrikeClassifier classifier;
+	const auto profile = arxvr::vrFistStrikeProfile();
+	classifier.update(sample(0.f, 0.f, 0), profile);
+	classifier.update(sample(2.4f, 0.f, 20000), profile);
+	classifier.update(sample(7.f, 0.f, 40000), profile);
+	classifier.update(sample(12.f, 0.f, 60000), profile);
+	classifier.update(sample(12.2f, 0.f, 80000), profile); // 10 units/s
+	const auto & metrics = classifier.metrics();
+	expect(metrics.peakSpeed > profile.minPeakSpeed,
+	       "stopped fixture should still contain a genuine earlier velocity peak");
+	expect(metrics.terminalSpeed < profile.minFollowThroughSpeed,
+	       "stopped fixture should be below the minimum follow-through speed");
+	expect(!classifier.canStrike(profile),
+	       "an almost stationary hand must not retain a damaging strike window");
+}
+
 void waggleIsRejected() {
 	arxvr::VrStrikeClassifier classifier;
 	const auto profile = arxvr::vrFistStrikeProfile();
@@ -168,6 +205,8 @@ void invalidAndOutOfOrderSamplesFailSafe() {
 
 int main() {
 	deliberatePunchQualifies();
+	deceleratingFollowThroughQualifies();
+	nearlyStoppedFollowThroughIsRejected();
 	waggleIsRejected();
 	slowMotionIsRejected();
 	trackingJumpResetsHistory();
