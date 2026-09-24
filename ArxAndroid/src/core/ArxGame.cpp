@@ -159,6 +159,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "vr/VrDefenseRuntime.h"
 #include "vr/VrHaptics.h"
 #include "vr/VrInteractionSystem.h"
+#include "vr/VrRuneRuntime.h"
+#include "game/magic/SpellRecognition.h"
 #include "vr/VrWeaponContact.h"
 #include "vr/VrWeaponSystem.h"
 #endif
@@ -208,6 +210,54 @@ static const PlatformDuration runeDrawPointInterval = 16ms; // ~60fps
 #if defined(ARXVR_ANDROID_BUILD)
 static Camera g_vrCenterCamera;
 static bool g_haveVrCenterCamera = false;
+static arxvr::VrRuneRuntime g_vrRuneRuntime;
+static bool g_vrRuneFeedbackPending = false;
+static std::array<Rune, MAX_SPELL_SYMBOLS> g_vrRuneSymbolsBefore{};
+static size_t g_vrRuneFeedbackPointCount = 0;
+static float g_vrRuneFeedbackPathLength = 0.f;
+static std::uint64_t g_vrRuneFeedbackDurationUs = 0;
+
+static arxvr::VrRuneVector3 vrRuneVector(const Vec3f & value) {
+	return { value.x, value.y, value.z };
+}
+
+static arxvr::VrRunePlane vrRuneDrawingPlane() {
+	arxvr::VrRunePlane plane;
+	if(!g_haveVrCenterCamera) {
+		return plane;
+	}
+
+	Vec3f forward = angleToVector(g_vrCenterCamera.angle);
+	if(glm::length(forward) <= 0.001f) {
+		return plane;
+	}
+	forward = glm::normalize(forward);
+	// Arx world +Y points down. Using world-up and a normal facing the player
+	// makes cross(up, normal) point toward physical controller-right at the
+	// neutral camera pose. VrRuneSystem locks this basis on paint-down.
+	const Vec3f worldUp(0.f, -1.f, 0.f);
+	plane.origin = vrRuneVector(g_vrCenterCamera.m_pos + forward * 70.f);
+	plane.normal = vrRuneVector(-forward);
+	plane.up = vrRuneVector(worldUp);
+	plane.valid = true;
+	return plane;
+}
+
+static std::uint64_t vrRuneTimestampUs() {
+	const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+	const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+	return micros > 0 ? static_cast<std::uint64_t>(micros) : 1u;
+}
+
+static bool vrRuneScreenPoint(const arxvr::VrRunePoint2 & point, Vec2s & screenPoint) {
+	const arxvr::VrRuneViewportPoint mapped = g_vrRuneRuntime.mapToViewport(
+		point, g_size.width(), g_size.height());
+	if(!mapped.valid) {
+		return false;
+	}
+	screenPoint = Vec2s(Vec2f(mapped.x, mapped.y));
+	return true;
+}
 
 enum class VrTraversalPhase {
 	Inactive,
@@ -2541,6 +2591,13 @@ bool ArxGame::initGame()
 	ARX_PARTICLES_ClearAll();
 	ParticleSparkClear();
 	ARX_MAGICAL_FLARES_FirstInit();
+#if defined(ARXVR_ANDROID_BUILD)
+	g_vrRuneRuntime.reset();
+	g_vrRuneFeedbackPending = false;
+	g_vrRuneFeedbackPointCount = 0;
+	g_vrRuneFeedbackPathLength = 0.f;
+	g_vrRuneFeedbackDurationUs = 0;
+#endif
 	
 	LastLoadedScene.clear();
 	
@@ -3605,10 +3662,61 @@ void ArxGame::updateLevel() {
 	if(!player.m_paralysed) {
 		bool runeDrawPressed = eeMousePressed1();
 #if defined(ARXVR_ANDROID_BUILD)
-		Vec2s vrRunePoint;
-		if(arxvrGetRuneScreenPoint(g_size, vrRunePoint)) {
-			DANAEMouse = vrRunePoint;
-			runeDrawPressed = true;
+		Vec3f vrRuneHandPosition(0.f);
+		Vec3f vrRuneHandDirection(0.f);
+		glm::quat vrRuneHandOrientation(1.f, 0.f, 0.f, 0.f);
+		const bool vrRuneTracking = g_haveVrCenterCamera
+		                         && arxvrGetRightHandWorldPose(
+			                         g_vrCenterCamera, player.angle.getYaw(),
+			                         vrRuneHandPosition, vrRuneHandDirection,
+			                         vrRuneHandOrientation);
+		(void)vrRuneHandDirection;
+		(void)vrRuneHandOrientation;
+
+		arxvr::VrRuneSample vrRuneSample;
+		vrRuneSample.timestampUs = vrRuneTimestampUs();
+		vrRuneSample.handPosition = vrRuneVector(vrRuneHandPosition);
+		vrRuneSample.trackingValid = vrRuneTracking;
+		vrRuneSample.paintPressed = arxvrIsRuneDrawing();
+		const arxvr::VrRuneRuntimeResult vrRune = g_vrRuneRuntime.update(
+			vrRuneSample, vrRuneDrawingPlane());
+
+		// The legacy flare renderer still consumes DANAEMouse, but the point now
+		// comes from the paint-down-locked physical plane rather than an HMD-
+		// relative projection. Repeated filtered points simply leave it stable.
+		if(vrRune.livePointValid) {
+			Vec2s vrRunePoint;
+			if(vrRuneScreenPoint(vrRune.livePoint, vrRunePoint)) {
+				DANAEMouse = vrRunePoint;
+			}
+		}
+		runeDrawPressed = runeDrawPressed
+		               || vrRune.status == arxvr::VrRuneStatus::Capturing;
+
+		if(vrRune.strokeEnded) {
+			// Discard all frame-rate-dependent intermediate points. A qualified
+			// physical gesture is replayed from VrRuneSystem's filtered path so the
+			// existing Arx recognizer, spell prerequisites and scripts stay intact.
+			spellRecognitionPointsReset();
+			if(vrRune.gestureReady) {
+				for(const arxvr::VrRunePoint2 & point : vrRune.gesture.points) {
+					Vec2s mapped;
+					if(vrRuneScreenPoint(point, mapped)) {
+						ARX_SPELLS_AddPoint(mapped);
+					}
+				}
+			}
+
+			if(!vrRune.cancelled) {
+				g_vrRuneSymbolsBefore = SpellSymbol;
+				g_vrRuneFeedbackPending = true;
+				g_vrRuneFeedbackPointCount = vrRune.gestureReady
+				                               ? vrRune.gesture.points.size() : 0;
+				g_vrRuneFeedbackPathLength = vrRune.gestureReady
+				                               ? vrRune.gesture.pathLength : 0.f;
+				g_vrRuneFeedbackDurationUs = vrRune.gestureReady
+				                              ? vrRune.gesture.durationUs : 0;
+			}
 		}
 #endif
 		if(runeDrawPressed) {
@@ -3639,6 +3747,20 @@ void ArxGame::updateLevel() {
 	
 	if(ARXmenu.mode() == Mode_InGame) {
 		ARX_SPELLS_ManageMagic();
+#if defined(ARXVR_ANDROID_BUILD)
+		if(g_vrRuneFeedbackPending) {
+			const bool accepted = SpellSymbol != g_vrRuneSymbolsBefore;
+			arxvrEmitHaptic(VrHapticHand::Right,
+			                 accepted ? VrHapticEvent::RuneAccepted
+			                          : VrHapticEvent::RuneRejected,
+			                 accepted ? 0.75f : 0.45f);
+			LogInfo << "ArxVR rune: accepted=" << accepted
+			        << " points=" << g_vrRuneFeedbackPointCount
+			        << " path=" << g_vrRuneFeedbackPathLength
+			        << " durationUs=" << g_vrRuneFeedbackDurationUs;
+			g_vrRuneFeedbackPending = false;
+		}
+#endif
 	}
 	
 	ARX_SPELLS_UpdateSymbolDraw();
