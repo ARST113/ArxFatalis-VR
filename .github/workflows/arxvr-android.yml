@@ -89,7 +89,8 @@ jobs:
           set -euxo pipefail
           for TEST_SOURCE in \
             VrStrikeClassifierTest.cpp \
-            VrImpactGateTest.cpp
+            VrImpactGateTest.cpp \
+            VrHandStateTest.cpp
           do
             TEST_NAME="${TEST_SOURCE%.cpp}"
             TEST_BIN="${RUNNER_TEMP}/${TEST_NAME}"
@@ -293,7 +294,7 @@ jobs:
             echo "- ABI: \`arm64-v8a\` only"
             echo "- Host: full \`ndk-build -B\`"
             echo "- Engine: clean CMake/Gradle build"
-            echo "- Verified: deterministic VR strike/impact tests, required native libraries, exported ArxVR bridge symbols, VR assets and package id"
+            echo "- Verified: deterministic VR strike/impact/hand-state tests, required native libraries, exported ArxVR bridge symbols, VR assets and package id"
             echo
             echo "The CI APK intentionally does not bundle proprietary Arx Fatalis PAK files."
             echo "Physical PICO QA still requires valid game data in the app's external files directory."
