@@ -133,6 +133,8 @@ void invalidAndOutOfOrderSamplesFailSafe() {
 	       "non-finite tracking sample should be rejected");
 	expect(classifier.metrics().sampleCount == 0,
 	       "invalid sample should clear potentially corrupted history");
+	expect(!classifier.armed(),
+	       "invalid tracking sample must fail closed until a slow rearm");
 }
 
 } // namespace
