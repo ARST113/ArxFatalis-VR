@@ -281,16 +281,29 @@ public:
 	bool defenseLatched(std::uint64_t sourceToken,
 	                    std::uint64_t strikeToken,
 	                    std::uint64_t timestampUs) const {
-		if(!m_latch.active || sourceToken == 0 || strikeToken == 0
-		   || timestampUs == 0 || m_latch.sourceToken != sourceToken
-		   || m_latch.strikeToken != strikeToken || timestampUs < m_latch.timestampUs) {
+		if(sourceToken == 0 || strikeToken == 0 || timestampUs == 0) {
 			return false;
 		}
-		return timestampUs - m_latch.timestampUs <= m_config.defenseLatchUs;
+		for(const DefenseLatch & latch : m_latches) {
+			if(!latch.active || latch.sourceToken != sourceToken
+			   || latch.strikeToken != strikeToken || timestampUs < latch.timestampUs) {
+				continue;
+			}
+			if(timestampUs - latch.timestampUs <= m_config.defenseLatchUs) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	VrDefenseEventType latchedDefenseType() const {
-		return m_latch.active ? m_latch.type : VrDefenseEventType::None;
+		const DefenseLatch * latest = nullptr;
+		for(const DefenseLatch & latch : m_latches) {
+			if(latch.active && (!latest || latch.timestampUs > latest->timestampUs)) {
+				latest = &latch;
+			}
+		}
+		return latest ? latest->type : VrDefenseEventType::None;
 	}
 
 	bool sampleShieldBlock(std::uint64_t sourceToken,
@@ -307,7 +320,9 @@ public:
 	void resetSession() {
 		m_shield = VrPublishedShield{};
 		m_defenderWeapon = VrPublishedDefenderWeapon{};
-		m_latch = DefenseLatch{};
+		for(DefenseLatch & latch : m_latches) {
+			latch = DefenseLatch{};
+		}
 		for(IncomingHistory & history : m_histories) {
 			history = IncomingHistory{};
 		}
@@ -354,11 +369,41 @@ private:
 	                     std::uint64_t strikeToken,
 	                     VrDefenseEventType type,
 	                     std::uint64_t timestampUs) {
-		m_latch.sourceToken = sourceToken;
-		m_latch.strikeToken = strikeToken;
-		m_latch.type = type;
-		m_latch.timestampUs = timestampUs;
-		m_latch.active = type != VrDefenseEventType::None;
+		if(sourceToken == 0 || strikeToken == 0 || timestampUs == 0
+		   || type == VrDefenseEventType::None) {
+			return;
+		}
+
+		DefenseLatch * target = nullptr;
+		DefenseLatch * oldest = &m_latches[0];
+		for(DefenseLatch & latch : m_latches) {
+			if(latch.active && latch.sourceToken == sourceToken
+			   && latch.strikeToken == strikeToken) {
+				target = &latch;
+				break;
+			}
+			if(!latch.active) {
+				target = &latch;
+				break;
+			}
+			if(timestampUs >= latch.timestampUs
+			   && timestampUs - latch.timestampUs > m_config.defenseLatchUs) {
+				target = &latch;
+				break;
+			}
+			if(latch.timestampUs < oldest->timestampUs) {
+				oldest = &latch;
+			}
+		}
+		if(!target) {
+			target = oldest;
+		}
+
+		target->sourceToken = sourceToken;
+		target->strikeToken = strikeToken;
+		target->type = type;
+		target->timestampUs = timestampUs;
+		target->active = true;
 	}
 
 	IncomingHistory & findOrAllocateHistory(std::uint64_t sourceToken,
@@ -394,7 +439,9 @@ private:
 	VrDefenseRuntimeConfig m_config{};
 	VrPublishedShield m_shield{};
 	VrPublishedDefenderWeapon m_defenderWeapon{};
-	DefenseLatch m_latch{};
+	// Multiple NPCs can overlap their equipment strike windows. Keep a small
+	// bounded keyed table so one defended strike cannot overwrite another.
+	std::array<DefenseLatch, 8> m_latches{};
 	std::array<IncomingHistory, 16> m_histories{};
 	VrDefenseSystem m_defense{};
 };
