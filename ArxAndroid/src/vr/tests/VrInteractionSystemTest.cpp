@@ -120,6 +120,21 @@ void trackingLossCannotEmitSemanticImpact() {
 	       "invalid tracking must never emit an impact event");
 }
 
+void invalidHandIdentityFailsClosed() {
+	arxvr::VrInteractionSystem system;
+	const auto status = system.updateHand(
+		arxvr::VrHand::Unknown,
+		sample(0.f, 0.f, 0, arxvr::VrImpactSource::Fist, 0, true));
+	expect(status == arxvr::VrImpactGateStatus::Invalid,
+	       "unknown hand identity should be rejected at the service boundary");
+	expect(!system.canImpact(arxvr::VrHand::Unknown),
+	       "unknown hand identity must never alias a physical hand state");
+	arxvr::VrImpactEvent impact;
+	expect(!system.consumeImpact(arxvr::VrHand::Unknown, impact),
+	       "unknown hand identity must not emit a semantic impact");
+	system.resetGesture(arxvr::VrHand::Unknown);
+}
+
 } // namespace
 
 int main() {
@@ -127,6 +142,7 @@ int main() {
 	handsOwnIndependentQualificationState();
 	heldObjectBecomesWeaponBearingSemanticEvent();
 	trackingLossCannotEmitSemanticImpact();
+	invalidHandIdentityFailsClosed();
 
 	if(g_failures != 0) {
 		std::cerr << g_failures << " interaction-system test(s) failed\n";
