@@ -36,12 +36,17 @@ jobs:
       SDL_COMMIT: 5d249570393f7a37e037abf22cd6012a4cc56a71
       ANDROID_DEPS_COMMIT: 983964fefe89ab0402f74415512536aa89cea680
       PICO_OPENXR_COMMIT: 292f3116d8a7d9646f8fbdf1848020e0542eadf4
+      ARXVR_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
     steps:
       - name: Checkout ArxFatalis-VR
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          # PR workflows normally check out GitHub's synthetic merge commit.
+          # Build the exact branch head so the artifact name and recorded SHA
+          # identify the source tree that produced the APK.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -193,16 +198,34 @@ jobs:
           test -s "${APK}"
 
           unzip -l "${APK}" | tee "${RUNNER_TEMP}/apk-files.txt"
+          unzip -Z1 "${APK}" | tee "${RUNNER_TEMP}/apk-entry-names.txt"
           for lib in \
             libarx.so \
             libopenxr_demos.so \
             libopenxr_loader.so \
             libassimp.so \
             libSDL2.so \
-            libOpenAL.so \
+            libopenal.so \
             libc++_shared.so
           do
-            grep -q "lib/arm64-v8a/${lib}" "${RUNNER_TEMP}/apk-files.txt"
+            grep -Fqx "lib/arm64-v8a/${lib}" "${RUNNER_TEMP}/apk-entry-names.txt"
+          done
+
+          # PICO 4 / PICO 4 Ultra builds are arm64-only. Reject an accidental
+          # second native ABI instead of silently shipping a mixed package.
+          if grep -E '^lib/(armeabi-v7a|x86|x86_64)/.*\.so$' "${RUNNER_TEMP}/apk-entry-names.txt"; then
+            echo "Unexpected non-arm64 native library in APK" >&2
+            exit 1
+          fi
+
+          for asset in \
+            assets/game_files/ArxLibertatis/cfg.ini \
+            assets/hand/Hand_L.fbx \
+            assets/hand/Hand_R.fbx \
+            assets/pico4_controller/PICO4_Controller_Left.fbx \
+            assets/pico4_controller/PICO4_Controller_Right.fbx
+          do
+            grep -Fqx "${asset}" "${RUNNER_TEMP}/apk-entry-names.txt"
           done
 
           mkdir -p "${RUNNER_TEMP}/apk-native"
@@ -220,7 +243,7 @@ jobs:
           grep -q "package: name='com.arxvr.android'" "${RUNNER_TEMP}/apk-badging.txt"
 
           SHA256="$(sha256sum "${APK}" | awk '{print $1}')"
-          SHORT_SHA="${GITHUB_SHA:0:12}"
+          SHORT_SHA="${ARXVR_SOURCE_SHA:0:12}"
           OUTPUT="ArxFatalis-VR-${SHORT_SHA}-debug.apk"
           cp "${APK}" "${OUTPUT}"
           echo "${SHA256}  ${OUTPUT}" | tee "${OUTPUT}.sha256"
@@ -231,7 +254,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ArxFatalis-VR-${{ github.sha }}-debug
+          name: ArxFatalis-VR-${{ env.ARXVR_SOURCE_SHA }}-debug
           path: |
             ${{ steps.verify.outputs.apk }}
             ${{ steps.verify.outputs.apk }}.sha256
@@ -244,12 +267,13 @@ jobs:
           {
             echo "## ArxFatalis-VR clean Android build"
             echo
-            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Source commit: \`${ARXVR_SOURCE_SHA}\`"
             echo "- APK: \`${{ steps.verify.outputs.apk }}\`"
             echo "- SHA-256: \`${{ steps.verify.outputs.sha256 }}\`"
-            echo "- ABI: \`arm64-v8a\`"
+            echo "- ABI: \`arm64-v8a\` only"
             echo "- Host: full \`ndk-build -B\`"
             echo "- Engine: clean CMake/Gradle build"
+            echo "- Verified: required native libraries, exported ArxVR bridge symbols, VR assets and package id"
             echo
             echo "The CI APK intentionally does not bundle proprietary Arx Fatalis PAK files."
             echo "Physical PICO QA still requires valid game data in the app's external files directory."
