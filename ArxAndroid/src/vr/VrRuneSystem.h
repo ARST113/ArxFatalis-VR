@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace arxvr {
@@ -301,21 +302,35 @@ private:
 		m_bounds.max.y = std::max(m_bounds.max.y, point.y);
 	}
 
-	void compactRetainedPoints() {
-		if(m_points.size() < 2) {
+	void makeRoomForRetainedPoint() {
+		if(m_points.size() < m_config.maximumPointCount) {
 			return;
 		}
 
-		// Preserve the complete gesture timespan instead of freezing the retained
-		// vector at the first maximumPointCount samples. Repeated deterministic
-		// decimation keeps the first point and progressively coarser historical
-		// samples; the newest accepted point is then appended by addProjectedPoint.
-		std::vector<VrRunePoint2> compacted;
-		compacted.reserve((m_points.size() + 1u) / 2u);
-		for(std::size_t i = 0; i < m_points.size(); i += 2) {
-			compacted.push_back(m_points[i]);
+		m_capacityLimited = true;
+		if(m_points.size() <= 2) {
+			// With a two-point budget, preserve the original paint-down and replace
+			// the previous endpoint with the newest physical endpoint.
+			m_points.pop_back();
+			return;
 		}
-		m_points.swap(compacted);
+
+		// Remove the interior point whose omission changes physical path length
+		// least. This preserves endpoints, corners and the minimum recognizer point
+		// density while still bounding memory for arbitrarily long strokes.
+		std::size_t removeIndex = 1;
+		float bestCost = std::numeric_limits<float>::infinity();
+		for(std::size_t i = 1; i + 1 < m_points.size(); ++i) {
+			const float via = projectedWorldDistance(m_points[i - 1], m_points[i])
+			                + projectedWorldDistance(m_points[i], m_points[i + 1]);
+			const float direct = projectedWorldDistance(m_points[i - 1], m_points[i + 1]);
+			const float cost = via - direct;
+			if(vrRuneFinite(cost) && cost < bestCost) {
+				bestCost = cost;
+				removeIndex = i;
+			}
+		}
+		m_points.erase(m_points.begin() + static_cast<std::ptrdiff_t>(removeIndex));
 	}
 
 	void addProjectedPoint(const VrRuneVector3 & handPosition, bool force) {
@@ -336,15 +351,12 @@ private:
 		}
 
 		// Keep trajectory metrics tied to the most recent accepted physical
-		// sample even when retained recognizer points must be compacted.
+		// sample even when retained recognizer points must be simplified.
 		m_lastProjectedPoint = point;
 		m_haveLastProjectedPoint = true;
 		expandBounds(point);
 
-		if(m_points.size() >= m_config.maximumPointCount) {
-			m_capacityLimited = true;
-			compactRetainedPoints();
-		}
+		makeRoomForRetainedPoint();
 		m_points.push_back(point);
 	}
 
