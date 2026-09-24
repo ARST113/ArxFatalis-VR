@@ -178,11 +178,14 @@ void oneShotAndCapacityLimit() {
 	system.update(sample(110000u, 10.f, 0.f), drawingPlane);
 	system.update(sample(120000u, 20.f, 0.f), drawingPlane);
 	system.update(sample(130000u, 30.f, 0.f), drawingPlane);
-	system.update(sample(140000u, 30.f, 0.f, false), drawingPlane);
+	system.update(sample(140000u, 40.f, 0.f), drawingPlane);
+	system.update(sample(150000u, 40.f, 0.f, false), drawingPlane);
 	arxvr::VrRuneGesture gesture;
 	expect(system.consumeGesture(gesture), "capacity-limited gesture should remain consumable");
 	expect(gesture.points.size() == 3 && gesture.capacityLimited,
 	       "point cap should be explicit and keep memory bounded");
+	expect(near(gesture.pathLength, 40.f),
+	       "samples beyond retained-point capacity must keep physical path metrics incremental");
 	arxvr::VrRuneGesture duplicate;
 	expect(!system.consumeGesture(duplicate), "completed gesture should be a one-shot event");
 }
